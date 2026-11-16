@@ -2,22 +2,18 @@
 
 Dự án xây dựng hệ thống quản lý danh mục và phân tích đầu tư định lượng chuẩn Bloomberg Terminal theo tiến trình 9 bước từ bài báo.
 
-## 🌿 Nhánh hiện tại: `step-6-myapp8`
-- **Tệp chính:** `myapp8.py`
-- **Mô tả:** Momentum Exposure Factor Panel:
-  - Xây dựng **Synthetic Momentum Factor** từ chỉ số chuẩn `SPY` theo công thức quỹ phòng hộ:
-    $$\text{Momentum}(t) = \frac{P(t)}{P(t-12)} - 1$$
-  - Đo lường mức độ phơi nhiễm nhân tố (Factor Exposure) thông qua hệ số tương quan Rolling 20 ngày giữa Danh mục và Yếu tố Momentum.
-  - Tính toán **Factor Beta** cho nhân tố Momentum: $\beta_{\text{mom}} = \frac{\text{Cov}(R_p, \text{Factor}_{\text{mom}})}{\text{Var}(\text{Factor}_{\text{mom}})}$.
-  - Bổ sung **Tab 5: Momentum Factors** với nhận định chiến lược phân loại tự động:
-    * **Momentum Rider** (Bắt đà xu hướng, corr > 0.3)
-    * **Contrarian** (Đi ngược đà, corr < -0.3)
-    * **Momentum Neutral** (Trung lập với đà thị trường)
-  - Biểu đồ đường Rolling Momentum Correlation và Biểu đồ so sánh 12-day Momentum giữa Portfolio vs SPY.
+## 🌿 Nhánh hiện tại: `step-7-myapp9`
+- **Tệp chính:** `myapp9.py`
+- **Mô tả:** Max Sharpe Portfolio Optimization Engine:
+  - Ứng dụng giải thuật tối ưu hóa phi tuyến **SLSQP (`scipy.optimize.minimize`)** để tìm vector trọng số $\mathbf{w}^*$ tối đa hóa Sharpe Ratio:
+    $$\max_{\mathbf{w}} \frac{\mathbf{w}^T \mathbf{\mu} - R_f}{\sqrt{\mathbf{w}^T \mathbf{\Sigma} \mathbf{w}}} \quad \text{s.t.} \quad \sum_{i=1}^N w_i = 1, \quad 0 \le w_i \le w_{\max}$$
+  - Ràng buộc thực tế: **No Shorting** ($w_i \ge 0$) và **Giới hạn tỷ trọng tối đa** ($w_i \le \text{Max Weight}$).
+  - Bảng so sánh 3 danh mục trực quan: **User Defined Portfolio** vs **Max Sharpe Optimized Portfolio** vs **Benchmark (SPY)**.
+  - Biểu đồ Bar so sánh trọng số và Biểu đồ đường tích lũy 3 danh mục.
 
 ## 🚀 Hướng dẫn chạy
 ```bash
-streamlit run myapp8.py
+streamlit run myapp9.py
 ```
 
 ## 🧪 Chạy kiểm thử
