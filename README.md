@@ -2,30 +2,35 @@
 
 Dự án xây dựng hệ thống quản lý danh mục và phân tích đầu tư định lượng chuẩn Bloomberg Terminal theo tiến trình 9 bước từ bài báo.
 
-## 🌿 Nhánh hiện tại: `step-8-myapp10`
-- **Tệp chính:** `myapp10.py`
-- **Mô tả:** Bull/Bear Regime Switching Strategy:
-  - Cỗ máy nhận diện chế độ thị trường **Market Regime Engine** phân tích chỉ số chuẩn `SPY`:
-    * **Trend (0/1):** Xu hướng MA50 so với MA200 (Golden Cross).
-    * **Momentum (0/1):** Lợi nhuận 12 ngày dương/âm ($P(t)/P(t-12)-1 > 0$).
-    * **Volatility (0/1):** Biến động 20 ngày so với trung vị 60 ngày (Risk-off hurdle).
-  - Công thức tổng hợp: $\text{Regime Score} = \text{Trend} + \text{Momentum} - \text{Volatility}$
-  - Phân loại chế độ:
-    * $\text{Score} \ge 1$: **BULL** (Tăng trưởng - Màu xanh)
-    * $\text{Score} = 0$: **NEUTRAL** (Trung lập - Màu vàng)
-    * $\text{Score} \le -1$: **BEAR** (Phòng thủ - Màu đỏ)
-  - **Chiến lược phân bổ tự động (Regime Switching Strategy):**
-    * Khi BULL: 100% Growth Portfolio.
-    * Khi NEUTRAL: 50% Growth + 50% Defensive (SPY).
-    * Khi BEAR: 100% Defensive (SPY/Cash).
-  - Trực quan hóa bản đồ chế độ thị trường **SPY Price Regime Map** phân đoạn màu sắc theo từng phiên.
+## 🌿 Nhánh hiện tại: `step-9-myapp13` (FINAL RELEASE)
+- **Tệp chính:** `myapp13.py`
+- **Mô tả:** Final Bloomberg-Style Quantitative Portfolio Terminal hoàn chỉnh gồm 5 Tab chuyên nghiệp:
+  1. **Tab 1: Portfolio & Efficient Frontier**
+     - Hiệu suất danh mục, phân bổ trọng số, tối ưu hóa Max Sharpe (SLSQP).
+     - Biểu đồ **Monte-Carlo Efficient Frontier** (mô phỏng 1,500 - 3,000 danh mục) highlight sao đỏ **Max Sharpe Portfolio** và kim cương vàng **Minimum Volatility Portfolio**.
+     - So sánh đường tích lũy 3 danh mục (User vs Optimized vs SPY).
+  2. **Tab 2: Risk & Rolling Beta Heatmap**
+     - Ma trận tương quan toàn diện.
+     - So sánh Drawdown Portfolio vs SPY.
+     - **Rolling Beta Heatmap** trực quan hóa biến thiên độ nhạy của từng cổ phiếu qua các chu kỳ thị trường.
+  3. **Tab 3: Trading Signals**
+     - Chỉ báo mua/bán (MA5/MA20 crossover) và trạng thái kỹ thuật cho từng mã.
+  4. **Tab 4: Backtest Performance**
+     - Thống kê tỷ lệ thắng (Win Rate), Histogram phân phối lợi nhuận ngày so sánh dạng overlay.
+  5. **Tab 5: Factors, CAPM & Active Attribution**
+     - **CAPM Alpha:** $\alpha = R_p - [R_f + \beta (R_{\text{SPY}} - R_f)]$
+     - **Treynor Ratio:** $\text{Treynor} = \frac{R_p - R_f}{\beta}$
+     - **Active Return Attribution vs SPY:** Phân tích đóng góp lợi nhuận chủ động từng mã:
+       $$\text{Contribution}_i = w_i \times (R_i - R_{\text{SPY}})$$
+     - Synthetic Momentum Factor Correlation & Factor Beta.
+  - **Top Bloomberg Ticker Tape:** Băng hiển thị chế độ thị trường **Market Regime Monitor** (`BULL` / `NEUTRAL` / `BEAR`), Regime Score, Beta và Alpha.
 
-## 🚀 Hướng dẫn chạy
+## 🚀 Hướng dẫn chạy ứng dụng cuối cùng
 ```bash
-streamlit run myapp10.py
+streamlit run myapp13.py
 ```
 
-## 🧪 Chạy kiểm thử
+## 🧪 Chạy toàn bộ 35 unit tests
 ```bash
 pytest tests/ -v
 ```
