@@ -196,10 +196,10 @@ def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchma
 
     # 7. Market Regime (SPY)
     spy_p = close_df[benchmark]
-    ma50 = spy_p.rolling(50).mean()
-    ma200 = spy_p.rolling(200).mean()
+    ma50 = spy_p.rolling(50).mean().loc[daily_returns.index]
+    ma200 = spy_p.rolling(200).mean().loc[daily_returns.index]
     t_sig = np.where(ma50 > ma200, 1, 0)
-    m12 = (spy_p / spy_p.shift(12)) - 1
+    m12 = ((spy_p / spy_p.shift(12)) - 1).loc[daily_returns.index]
     m_sig = np.where(m12 > 0, 1, 0)
     vol20 = spy_daily.rolling(20).std() * np.sqrt(252)
     v_sig = np.where(vol20 > vol20.rolling(60).median(), 1, 0)
@@ -215,7 +215,7 @@ def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchma
         signals[a] = {"Price": close_df[a].iloc[-1], "MA5": s_ma5.iloc[-1], "MA20": s_ma20.iloc[-1], "Signal": sig}
 
     # Synthetic Momentum Factor
-    synth_mom = (spy_p / spy_p.shift(12)) - 1
+    synth_mom = ((spy_p / spy_p.shift(12)) - 1).loc[daily_returns.index]
     mom_corr = user_daily.rolling(20).corr(synth_mom)
     latest_mom_corr = float(mom_corr.dropna().iloc[-1]) if not mom_corr.dropna().empty else 0.0
 
@@ -231,6 +231,7 @@ def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchma
         "spy_total": spy_total,
         "spy_vol": spy_vol,
         "spy_sharpe": spy_sharpe,
+        "spy_dd": spy_dd,
         "opt_weights": opt_dict,
         "opt_cum": opt_cum,
         "opt_total": opt_total,
