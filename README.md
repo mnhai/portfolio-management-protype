@@ -2,18 +2,27 @@
 
 Dự án xây dựng hệ thống quản lý danh mục và phân tích đầu tư định lượng chuẩn Bloomberg Terminal theo tiến trình 9 bước từ bài báo.
 
-## 🌿 Nhánh hiện tại: `step-7-myapp9`
-- **Tệp chính:** `myapp9.py`
-- **Mô tả:** Max Sharpe Portfolio Optimization Engine:
-  - Ứng dụng giải thuật tối ưu hóa phi tuyến **SLSQP (`scipy.optimize.minimize`)** để tìm vector trọng số $\mathbf{w}^*$ tối đa hóa Sharpe Ratio:
-    $$\max_{\mathbf{w}} \frac{\mathbf{w}^T \mathbf{\mu} - R_f}{\sqrt{\mathbf{w}^T \mathbf{\Sigma} \mathbf{w}}} \quad \text{s.t.} \quad \sum_{i=1}^N w_i = 1, \quad 0 \le w_i \le w_{\max}$$
-  - Ràng buộc thực tế: **No Shorting** ($w_i \ge 0$) và **Giới hạn tỷ trọng tối đa** ($w_i \le \text{Max Weight}$).
-  - Bảng so sánh 3 danh mục trực quan: **User Defined Portfolio** vs **Max Sharpe Optimized Portfolio** vs **Benchmark (SPY)**.
-  - Biểu đồ Bar so sánh trọng số và Biểu đồ đường tích lũy 3 danh mục.
+## 🌿 Nhánh hiện tại: `step-8-myapp10`
+- **Tệp chính:** `myapp10.py`
+- **Mô tả:** Bull/Bear Regime Switching Strategy:
+  - Cỗ máy nhận diện chế độ thị trường **Market Regime Engine** phân tích chỉ số chuẩn `SPY`:
+    * **Trend (0/1):** Xu hướng MA50 so với MA200 (Golden Cross).
+    * **Momentum (0/1):** Lợi nhuận 12 ngày dương/âm ($P(t)/P(t-12)-1 > 0$).
+    * **Volatility (0/1):** Biến động 20 ngày so với trung vị 60 ngày (Risk-off hurdle).
+  - Công thức tổng hợp: $\text{Regime Score} = \text{Trend} + \text{Momentum} - \text{Volatility}$
+  - Phân loại chế độ:
+    * $\text{Score} \ge 1$: **BULL** (Tăng trưởng - Màu xanh)
+    * $\text{Score} = 0$: **NEUTRAL** (Trung lập - Màu vàng)
+    * $\text{Score} \le -1$: **BEAR** (Phòng thủ - Màu đỏ)
+  - **Chiến lược phân bổ tự động (Regime Switching Strategy):**
+    * Khi BULL: 100% Growth Portfolio.
+    * Khi NEUTRAL: 50% Growth + 50% Defensive (SPY).
+    * Khi BEAR: 100% Defensive (SPY/Cash).
+  - Trực quan hóa bản đồ chế độ thị trường **SPY Price Regime Map** phân đoạn màu sắc theo từng phiên.
 
 ## 🚀 Hướng dẫn chạy
 ```bash
-streamlit run myapp9.py
+streamlit run myapp10.py
 ```
 
 ## 🧪 Chạy kiểm thử
