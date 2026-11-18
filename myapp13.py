@@ -194,7 +194,7 @@ def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchma
     active_returns = asset_totals - spy_total
     active_attributions = {a: user_weights[a] * active_returns[a] for a in assets}
 
-    # 7. Market Regime (SPY)
+    # 7. Market Regime (SPY) & Dynamic Switching Strategy
     spy_p = close_df[benchmark]
     ma50 = spy_p.rolling(50).mean().loc[daily_returns.index]
     ma200 = spy_p.rolling(200).mean().loc[daily_returns.index]
@@ -205,6 +205,26 @@ def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchma
     v_sig = np.where(vol20 > vol20.rolling(60).median(), 1, 0)
     r_score = t_sig + m_sig - v_sig
     current_regime = "BULL" if r_score[-1] >= 1 else ("BEAR" if r_score[-1] <= -1 else "NEUTRAL")
+
+    regime_labels = pd.Series(
+        np.select([r_score >= 1, r_score == 0, r_score <= -1], ["BULL", "NEUTRAL", "BEAR"], default="NEUTRAL"),
+        index=daily_returns.index
+    )
+    regime_df = pd.DataFrame({
+        "Close": spy_p.loc[daily_returns.index],
+        "MA50": ma50,
+        "MA200": ma200,
+        "Regime_Score": r_score,
+        "Regime": regime_labels
+    })
+
+    # Mô phỏng chiến lược Regime Switching (dùng lagged regime để tránh look-ahead bias)
+    lagged_reg = regime_labels.shift(1).fillna("NEUTRAL")
+    strat_daily = np.where(
+        lagged_reg == "BULL", user_daily,
+        np.where(lagged_reg == "NEUTRAL", 0.5 * user_daily + 0.5 * spy_daily, spy_daily)
+    )
+    regime_strategy_cum = (1 + pd.Series(strat_daily, index=daily_returns.index)).cumprod() - 1
 
     # 8. Signals MA5/MA20
     signals = {}
@@ -257,6 +277,8 @@ def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchma
         "asset_totals": asset_totals,
         "current_regime": current_regime,
         "regime_score": int(r_score[-1]),
+        "regime_df": regime_df,
+        "regime_strategy_cum": regime_strategy_cum,
         "signals": signals,
         "latest_mom_corr": latest_mom_corr,
         "mom_corr": mom_corr,
@@ -457,8 +479,30 @@ else:
 
             hist_df = pd.DataFrame({"Portfolio": m["user_daily"]*100, benchmark_ticker: m["spy_daily"]*100})
             fig_h = px.histogram(hist_df, barmode="overlay", nbins=60, opacity=0.6, color_discrete_map={"Portfolio": "#00CC96", benchmark_ticker: "#636EFA"})
-            fig_h.update_layout(height=380, xaxis_title="Lợi nhuận ngày (%)")
+            fig_h.update_layout(height=360, xaxis_title="Lợi nhuận ngày (%)")
             st.plotly_chart(fig_h, use_container_width=True)
+
+            st.divider()
+            st.subheader("🧭 Backtest Chiến Lược Bull/Bear Regime Switching vs Static Buy & Hold")
+            fig_strat = go.Figure()
+            fig_strat.add_trace(go.Scatter(x=m["regime_strategy_cum"].index, y=m["regime_strategy_cum"]*100, name="🛡️ REGIME SWITCHING STRATEGY", line=dict(color="#00CC96", width=3)))
+            fig_strat.add_trace(go.Scatter(x=m["user_cum"].index, y=m["user_cum"]*100, name="👤 STATIC USER PORTFOLIO", line=dict(color="#636EFA", width=2)))
+            fig_strat.add_trace(go.Scatter(x=m["spy_cum"].index, y=m["spy_cum"]*100, name=f"🏛️ {benchmark_ticker} BUY & HOLD", line=dict(color="#EF553B", dash="dash")))
+            fig_strat.update_layout(height=380, xaxis_title="Thời gian", yaxis_title="Lợi nhuận tích lũy (%)", yaxis=dict(ticksuffix="%"), hovermode="x unified")
+            st.plotly_chart(fig_strat, use_container_width=True)
+
+            st.subheader(f"🗺️ Bản Đồ Chế Độ Thị Trường ({benchmark_ticker} Price Regime Map)")
+            reg_df = m["regime_df"].dropna(subset=["MA200"])
+            fig_map = go.Figure()
+            color_map = {"BULL": "#00CC96", "NEUTRAL": "#FFA15A", "BEAR": "#EF553B"}
+            fig_map.add_trace(go.Scatter(x=reg_df.index, y=reg_df["Close"], mode="lines", name=f"{benchmark_ticker} Price", line=dict(color="rgba(150, 150, 150, 0.4)")))
+            for reg in ["BULL", "NEUTRAL", "BEAR"]:
+                sub = reg_df[reg_df["Regime"] == reg]
+                fig_map.add_trace(go.Scatter(x=sub.index, y=sub["Close"], mode="markers", name=f"Chế độ {reg}", marker=dict(color=color_map[reg], size=5)))
+            fig_map.add_trace(go.Scatter(x=reg_df.index, y=reg_df["MA50"], name="MA50", line=dict(color="#1f77b4", dash="dot")))
+            fig_map.add_trace(go.Scatter(x=reg_df.index, y=reg_df["MA200"], name="MA200", line=dict(color="#9467bd")))
+            fig_map.update_layout(height=400, xaxis_title="Thời gian", yaxis_title=f"{benchmark_ticker} Price (USD)", hovermode="x unified")
+            st.plotly_chart(fig_map, use_container_width=True)
 
         # ==================== TAB 5: FACTORS & ATTRIBUTION ====================
         with tab5:

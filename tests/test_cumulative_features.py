@@ -70,3 +70,5 @@ def test_myapp13_preserves_all_features():
     assert "fig_dd" in src
     assert "rolling_vol" in src
     assert "mom_corr" in src
+    assert "fig_strat" in src
+    assert "fig_map" in src
