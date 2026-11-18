@@ -1,17 +1,5 @@
-"""Bước 9 — Final Bloomberg-Style Portfolio Terminal (myapp13.py)
-Ứng dụng hoàn chỉnh chuẩn Bloomberg Terminal với 5 Tab chuyên nghiệp:
-- Tab 1 (Portfolio): Lợi nhuận danh mục, phân bổ trọng số, tối ưu hóa Max Sharpe (SLSQP),
-  biểu đồ Monte-Carlo Efficient Frontier (biên hiệu quả mô phỏng 2000 danh mục).
-- Tab 2 (Risk): Ma trận tương quan, drawdown so sánh, volatility, Rolling Beta 20 ngày,
-  và Rolling Beta Heatmap đa tài sản theo thời gian.
-- Tab 3 (Signals): Chỉ báo mua/bán (MA5/MA20) kèm trạng thái kỹ thuật và mức giá mục tiêu.
-- Tab 4 (Backtest): Hiệu suất lịch sử chi tiết so với SPY, Win rate, Histogram phân phối,
-  kết hợp chiến lược Dynamic Regime Switching.
-- Tab 5 (Factors): Phân tích nhân tố chuyên sâu gồm CAPM Alpha, Treynor Ratio, Beta Exposure,
-  Active Return Attribution vs SPY (đóng góp lợi nhuận chủ động từng tài sản), và Synthetic Momentum Factor.
-Bổ sung: Top Bloomberg Ticker Tape hiển thị chế độ thị trường hiện tại (Regime BULL/NEUTRAL/BEAR).
-"""
-from datetime import datetime, date
+"""Bước 9 — myapp13.py: Final Bloomberg-Style Portfolio Terminal (5 tab)"""
+from datetime import date, datetime
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -20,538 +8,448 @@ import plotly.graph_objs as go
 import plotly.express as px
 from scipy.optimize import minimize
 
-# 1. Cấu hình giao diện chuẩn Bloomberg Terminal
-st.set_page_config(
-    page_title="Bloomberg-Style Portfolio Terminal",
-    page_icon="🏛️",
-    layout="wide"
-)
+st.set_page_config(page_title="Bloomberg-Style Portfolio Terminal", page_icon="📈", layout="wide")
 
-# Custom Styling cho phong cách Bloomberg Dark / Quant Terminal
-st.markdown("""
-<style>
-    .metric-card {
-        background-color: #1E1E2E;
-        border-radius: 8px;
-        padding: 12px;
-        border-left: 4px solid #00CC96;
-    }
-    .bloomberg-tag {
-        font-family: monospace;
-        font-size: 13px;
-        font-weight: bold;
-        color: #FFA15A;
-    }
-</style>
-""", unsafe_allow_html=True)
+st.title("📈 Bloomberg-Style Portfolio Terminal")
 
-st.title("🏛️ Bloomberg-Style Quantitative Portfolio Terminal")
-st.caption("Bước 9 — Ứng Dụng Hoàn Chỉnh: Tối Ưu Hóa Danh Mục, Biên Hiệu Quả Monte-Carlo, Quản Trị Rủi Ro & Phân Tích Nhân Tố")
-
-# 2. Thanh bên (Sidebar)
 with st.sidebar:
-    st.header("⚙️ Thiết Lập Terminal")
-    default_tickers = "AAPL, MSFT, NVDA"
-    tickers_input = st.text_input("Mã danh mục (Tickers):", default_tickers)
+    st.header("⚙️ Settings")
+    tickers_input = st.text_input("Tickers", "AAPL,MSFT,NVDA")
     tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+    start_date = st.date_input("Start Date", date(2022, 1, 1))
 
-    benchmark_ticker = st.text_input("Benchmark thị trường:", "SPY").strip().upper()
-
-    start_date = st.date_input("Ngày bắt đầu:", date(2022, 1, 1))
-    end_date = st.date_input("Ngày kết thúc:", datetime.today().date())
-    rf_rate = st.number_input("Lãi suất phi rủi ro (Risk-Free Rate):", value=0.02, step=0.005, format="%.3f")
-
-    st.subheader("🛠️ Cấu Hình Tối Ưu Hóa")
-    max_weight_cap = st.slider("Tỷ trọng tối đa mỗi mã (Max Weight Cap):", 0.2, 1.0, 0.6, 0.05)
-    num_monte_carlo = st.slider("Số lượng mô phỏng Monte-Carlo:", 500, 3000, 1500, 500)
-
-    st.subheader("⚖️ Trọng Số Tự Chọn (User Weights)")
+    st.subheader("Weights")
     raw_weights = {}
     default_w = 1.0 / len(tickers) if tickers else 1.0
     for t in tickers:
-        raw_weights[t] = st.slider(f"Trọng số {t}:", 0.0, 1.0, float(default_w), 0.05)
+        raw_weights[t] = st.slider(f"{t} Weight", 0.0, 1.0, float(default_w), 0.05)
 
-    total_raw = sum(raw_weights.values())
-    normalized_weights = {k: v / total_raw for k, v in raw_weights.items()} if total_raw > 0 else {k: 1.0 / len(tickers) for k in tickers}
-
-    btn_reload = st.button("🚀 Cập Nhật Toàn Bộ Terminal", use_container_width=True)
+    total_w = sum(raw_weights.values())
+    weights_dict = {k: v / total_w for k, v in raw_weights.items()} if total_w > 0 else {k: 1.0 / len(tickers) for k in tickers}
 
 
-# 3. Hàm tải và xử lý dữ liệu
 @st.cache_data(ttl=3600)
-def fetch_terminal_data(assets: list, benchmark: str, start: str, end: str):
-    symbols = list(dict.fromkeys(assets + [benchmark]))
+def fetch_terminal_data(assets: list, benchmark: str, start: str, end: str = None):
+    if end is None:
+        end = str(datetime.today().date())
+    factors = ["SPY", "QQQ", "IWM", "^VIX"]
+    symbols = list(dict.fromkeys(assets + [benchmark] + factors))
     try:
-        raw_data = yf.download(symbols, start=start, end=end, auto_adjust=True)
+        raw = yf.download(symbols, start=start, end=end, auto_adjust=True)
     except Exception as e:
-        return None, f"Lỗi kết nối yfinance: {e}"
+        return None, f"Lỗi tải dữ liệu: {e}"
 
-    if raw_data.empty:
+    if raw.empty:
         return None, "Không tìm thấy dữ liệu."
 
-    close_df = raw_data["Close"].copy() if "Close" in raw_data else raw_data.copy()
+    close_df = raw["Close"].copy() if "Close" in raw else raw.copy()
     if isinstance(close_df, pd.Series):
         close_df = close_df.to_frame(name=symbols[0])
     if isinstance(close_df.columns, pd.MultiIndex):
         close_df.columns = close_df.columns.get_level_values(-1)
 
+    close_df.rename(columns={"^VIX": "VIX"}, inplace=True)
     close_df.dropna(how="all", inplace=True)
     close_df.ffill(inplace=True)
     close_df.dropna(inplace=True)
-
-    if benchmark not in close_df.columns:
-        return None, f"Thiếu dữ liệu benchmark {benchmark}."
-    for a in assets:
-        if a not in close_df.columns:
-            return None, f"Thiếu dữ liệu mã {a}."
-
     return close_df, None
 
 
-def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchmark: str, user_weights: dict, rf: float, max_w: float, n_mc: int):
-    daily_returns = close_df.pct_change().dropna()
-    weights_vec = np.array([user_weights[a] for a in assets])
-
-    # 1. User & Benchmark Returns
-    user_daily = daily_returns[assets].dot(weights_vec)
-    user_cum = (1 + user_daily).cumprod() - 1
-    spy_daily = daily_returns[benchmark]
-    spy_cum = (1 + spy_daily).cumprod() - 1
-
-    user_total = user_cum.iloc[-1]
-    spy_total = spy_cum.iloc[-1]
-    user_vol = user_daily.std() * np.sqrt(252)
-    spy_vol = spy_daily.std() * np.sqrt(252)
-
-    user_annual_ret = user_daily.mean() * 252
-    spy_annual_ret = spy_daily.mean() * 252
-    user_sharpe = (user_annual_ret - rf) / user_vol if user_vol > 0 else 0.0
-    spy_sharpe = (spy_annual_ret - rf) / spy_vol if spy_vol > 0 else 0.0
-
-    # 2. Drawdowns
-    user_wealth = (1 + user_daily).cumprod()
-    user_dd = (user_wealth - user_wealth.cummax()) / user_wealth.cummax()
-    spy_wealth = (1 + spy_daily).cumprod()
-    spy_dd = (spy_wealth - spy_wealth.cummax()) / spy_wealth.cummax()
-
-    # 3. Max Sharpe Optimization (SLSQP)
-    mean_vec = daily_returns[assets].mean().values * 252
-    cov_mat = daily_returns[assets].cov().values * 252
-    n_a = len(assets)
-    w0 = np.ones(n_a) / n_a
-    bounds = tuple((0.0, max_w) for _ in range(n_a))
+def optimize_max_sharpe(daily_returns: pd.DataFrame, assets: list, rf: float = 0.02, max_weight: float = 1.0):
+    asset_returns = daily_returns[assets]
+    mean_ret = asset_returns.mean() * 252
+    cov_mat = asset_returns.cov() * 252
+    num_assets = len(assets)
+    w0 = np.ones(num_assets) / num_assets
+    bounds = tuple((0.0, max_weight) for _ in range(num_assets))
     constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
 
     def neg_sharpe(w):
-        p_ret = np.dot(w, mean_vec)
-        p_vol = np.sqrt(np.dot(w.T, np.dot(cov_mat, w)))
-        return -(p_ret - rf) / p_vol if p_vol > 0 else 0
+        port_ret = np.dot(w, mean_ret)
+        port_vol = np.sqrt(np.dot(w.T, np.dot(cov_mat, w)))
+        return -(port_ret - rf) / port_vol if port_vol > 0 else 0
 
     res = minimize(neg_sharpe, w0, method='SLSQP', bounds=bounds, constraints=constraints)
     opt_weights = res.x if res.success else w0
-    opt_dict = dict(zip(assets, opt_weights))
-    opt_daily = daily_returns[assets].dot(opt_weights)
-    opt_cum = (1 + opt_daily).cumprod() - 1
-    opt_total = opt_cum.iloc[-1]
+    opt_ret = np.dot(opt_weights, mean_ret)
     opt_vol = np.sqrt(np.dot(opt_weights.T, np.dot(cov_mat, opt_weights)))
-    opt_ret = np.dot(opt_weights, mean_vec)
     opt_sharpe = (opt_ret - rf) / opt_vol if opt_vol > 0 else 0.0
-    opt_wealth = (1 + opt_daily).cumprod()
-    opt_dd = (opt_wealth - opt_wealth.cummax()) / opt_wealth.cummax()
+    return {"success": res.success, "weights": dict(zip(assets, opt_weights)), "expected_return": opt_ret, "volatility": opt_vol, "sharpe_ratio": opt_sharpe}
 
-    # 4. Monte-Carlo Efficient Frontier
-    mc_weights = np.random.dirichlet(np.ones(n_a), size=n_mc)
+
+def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchmark: str, w_dict: dict, rf: float = 0.02, max_w: float = 1.0, n_mc: int = 5000):
+    returns_df = close_df.pct_change().dropna()
+    w_vec = np.array([w_dict[t] for t in assets])
+
+    port_ret = returns_df[assets].dot(w_vec)
+    spy_ret = returns_df[benchmark]
+
+    port_wealth = (1 + port_ret).cumprod()
+    spy_wealth = (1 + spy_ret).cumprod()
+    port_cum = port_wealth - 1
+    spy_cum = spy_wealth - 1
+
+    total_port_ret = port_cum.iloc[-1]
+    total_spy_ret = spy_cum.iloc[-1]
+    alpha_vs_spy = total_port_ret - total_spy_ret
+
+    port_vol = port_ret.std() * np.sqrt(252)
+    spy_vol = spy_ret.std() * np.sqrt(252)
+    port_annual_ret = port_ret.mean() * 252
+    spy_annual_ret = spy_ret.mean() * 252
+    port_sharpe = (port_annual_ret - rf) / port_vol if port_vol > 0 else 0.0
+    spy_sharpe = (spy_annual_ret - rf) / spy_vol if spy_vol > 0 else 0.0
+
+    port_dd = (port_wealth - port_wealth.cummax()) / port_wealth.cummax()
+    spy_dd = (spy_wealth - spy_wealth.cummax()) / spy_wealth.cummax()
+
+    roll_vol_port = port_ret.rolling(20).std() * np.sqrt(252)
+    roll_vol_spy = spy_ret.rolling(20).std() * np.sqrt(252)
+
+    # Betas
+    rolling_beta = port_ret.rolling(20).cov(spy_ret) / spy_ret.rolling(20).var()
+    latest_beta = float(rolling_beta.dropna().iloc[-1]) if not rolling_beta.dropna().empty else 1.0
+    market_beta = float(port_ret.cov(spy_ret) / spy_ret.var()) if spy_ret.var() > 0 else 1.0
+
+    # Synthetic Momentum
+    spy_close = close_df[benchmark].loc[returns_df.index]
+    synth_momentum = (spy_close / spy_close.shift(12)) - 1
+    rolling_mom_corr = port_ret.rolling(20).corr(synth_momentum)
+    latest_mom_exp = float(rolling_mom_corr.dropna().iloc[-1]) if not rolling_mom_corr.dropna().empty else 0.0
+
+    # Max Sharpe Optimization
+    opt = optimize_max_sharpe(returns_df, assets, rf=rf, max_weight=max_w)
+    opt_vec = np.array([opt["weights"][t] for t in assets])
+    opt_daily = returns_df[assets].dot(opt_vec)
+    opt_cum = (1 + opt_daily).cumprod() - 1
+
+    # Monte Carlo 5,000 portfolios
+    mean_vec = returns_df[assets].mean().values * 252
+    cov_mat = returns_df[assets].cov().values * 252
+    mc_weights = np.random.dirichlet(np.ones(len(assets)), size=n_mc)
     mc_returns = np.dot(mc_weights, mean_vec)
     mc_vols = np.sqrt(np.einsum('ij,jk,ik->i', mc_weights, cov_mat, mc_weights))
     mc_sharpes = (mc_returns - rf) / mc_vols
 
-    # Minimum Volatility Portfolio
-    min_vol_idx = np.argmin(mc_vols)
-    min_vol_point = (mc_vols[min_vol_idx], mc_returns[min_vol_idx])
+    # Individual Assets Vol & Return
+    indiv_vols = returns_df[assets].std().values * np.sqrt(252)
+    indiv_rets = returns_df[assets].mean().values * 252
 
-    # 5. Beta & CAPM Alpha & Treynor Ratio
-    cov_spy = user_daily.cov(spy_daily)
-    var_spy = spy_daily.var()
-    beta_total = cov_spy / var_spy if var_spy > 0 else 1.0
+    # CAPM Alpha & Treynor Ratio
+    capm_expected = rf + market_beta * (spy_annual_ret - rf)
+    capm_alpha = port_annual_ret - capm_expected
+    treynor_ratio = (port_annual_ret - rf) / market_beta if market_beta != 0 else 0.0
 
-    # CAPM Expected Return = Rf + Beta * (Rm - Rf)
-    capm_expected = rf + beta_total * (spy_annual_ret - rf)
-    capm_alpha = user_annual_ret - capm_expected
-    treynor_ratio = (user_annual_ret - rf) / beta_total if beta_total != 0 else 0.0
+    # Factor Betas (SPY, QQQ, IWM, VIX)
+    factor_names = [f for f in ["SPY", "QQQ", "IWM", "VIX"] if f in returns_df.columns]
+    factor_betas = {}
+    for f in factor_names:
+        var_f = returns_df[f].var()
+        factor_betas[f] = float(port_ret.cov(returns_df[f]) / var_f) if var_f > 0 else 0.0
 
-    # Rolling Beta vs SPY (20d)
-    rolling_beta = user_daily.rolling(20).cov(spy_daily) / spy_daily.rolling(20).var()
-    latest_beta = float(rolling_beta.dropna().iloc[-1]) if not rolling_beta.dropna().empty else beta_total
+    # Market Regime RISK ON / RISK OFF từ SPY, QQQ, VIX
+    if "SPY" in close_df.columns and "QQQ" in close_df.columns and "VIX" in close_df.columns:
+        spy_above_ma50 = close_df["SPY"].iloc[-1] > close_df["SPY"].rolling(50).mean().iloc[-1]
+        qqq_above_ma50 = close_df["QQQ"].iloc[-1] > close_df["QQQ"].rolling(50).mean().iloc[-1]
+        vix_calm = close_df["VIX"].iloc[-1] < close_df["VIX"].rolling(50).mean().iloc[-1]
+        risk_regime = "RISK ON" if (spy_above_ma50 and qqq_above_ma50 and vix_calm) else "RISK OFF"
+    else:
+        risk_regime = "RISK ON" if latest_beta >= 1.0 else "RISK OFF"
 
-    # Rolling Beta cho từng tài sản thành phần
-    asset_rolling_betas = pd.DataFrame(index=daily_returns.index)
-    for a in assets:
-        asset_rolling_betas[a] = daily_returns[a].rolling(20).cov(spy_daily) / spy_daily.rolling(20).var()
+    # Signals
+    sig_matrix = pd.DataFrame(index=close_df.index)
+    for t in assets:
+        ma5 = close_df[t].rolling(5).mean()
+        ma20 = close_df[t].rolling(20).mean()
+        sig_matrix[t] = np.where(ma5 > ma20, 1, 0)
+    avg_signal = sig_matrix.mean(axis=1)
+    port_sig_label = "BUY" if avg_signal.iloc[-1] >= 0.5 else "SELL"
 
-    # 6. Active Return Attribution vs SPY
-    # Contrib_i = Weight_i * (Asset_Return_i - SPY_Return)
-    asset_totals = (1 + daily_returns[assets]).cumprod().iloc[-1] - 1
-    active_returns = asset_totals - spy_total
-    active_attributions = {a: user_weights[a] * active_returns[a] for a in assets}
-
-    # 7. Market Regime (SPY) & Dynamic Switching Strategy
-    spy_p = close_df[benchmark]
-    ma50 = spy_p.rolling(50).mean().loc[daily_returns.index]
-    ma200 = spy_p.rolling(200).mean().loc[daily_returns.index]
-    t_sig = np.where(ma50 > ma200, 1, 0)
-    m12 = ((spy_p / spy_p.shift(12)) - 1).loc[daily_returns.index]
-    m_sig = np.where(m12 > 0, 1, 0)
-    vol20 = spy_daily.rolling(20).std() * np.sqrt(252)
-    v_sig = np.where(vol20 > vol20.rolling(60).median(), 1, 0)
-    r_score = t_sig + m_sig - v_sig
-    current_regime = "BULL" if r_score[-1] >= 1 else ("BEAR" if r_score[-1] <= -1 else "NEUTRAL")
-
-    regime_labels = pd.Series(
+    # Bull/Neutral/Bear Regime Switching Strategy
+    ma50_spy = spy_close.rolling(50).mean()
+    ma200_spy = spy_close.rolling(200).mean()
+    t_sig = np.where(ma50_spy > ma200_spy, 1, 0)
+    m_sig = np.where(synth_momentum > 0, 1, 0)
+    v_sig = np.where(roll_vol_spy > roll_vol_spy.rolling(60).median(), 1, 0)
+    r_score = pd.Series(t_sig + m_sig - v_sig, index=returns_df.index)
+    r_labels = pd.Series(
         np.select([r_score >= 1, r_score == 0, r_score <= -1], ["BULL", "NEUTRAL", "BEAR"], default="NEUTRAL"),
-        index=daily_returns.index
+        index=returns_df.index
     )
-    regime_df = pd.DataFrame({
-        "Close": spy_p.loc[daily_returns.index],
-        "MA50": ma50,
-        "MA200": ma200,
-        "Regime_Score": r_score,
-        "Regime": regime_labels
-    })
-
-    # Mô phỏng chiến lược Regime Switching (dùng lagged regime để tránh look-ahead bias)
-    lagged_reg = regime_labels.shift(1).fillna("NEUTRAL")
-    strat_daily = np.where(
-        lagged_reg == "BULL", user_daily,
-        np.where(lagged_reg == "NEUTRAL", 0.5 * user_daily + 0.5 * spy_daily, spy_daily)
+    lagged_r = r_labels.shift(1).fillna("NEUTRAL")
+    strat_ret = pd.Series(
+        np.where(lagged_r == "BULL", port_ret, np.where(lagged_r == "NEUTRAL", 0.5 * port_ret + 0.5 * spy_ret, spy_ret)),
+        index=returns_df.index
     )
-    regime_strategy_cum = (1 + pd.Series(strat_daily, index=daily_returns.index)).cumprod() - 1
+    strat_cum = (1 + strat_ret).cumprod() - 1
+    regime_df = pd.DataFrame({"Date": returns_df.index, "SPY": spy_close.values, "Regime_Score": r_score.values, "Regime": r_labels.values}).set_index("Date")
 
-    # 8. Signals MA5/MA20
-    signals = {}
-    for a in assets:
-        s_ma5 = close_df[a].rolling(5).mean()
-        s_ma20 = close_df[a].rolling(20).mean()
-        sig = "BUY" if s_ma5.iloc[-1] > s_ma20.iloc[-1] else "SELL"
-        signals[a] = {"Price": close_df[a].iloc[-1], "MA5": s_ma5.iloc[-1], "MA20": s_ma20.iloc[-1], "Signal": sig}
+    # 60-Day Rolling Beta Heatmap vs SPY
+    beta_60d_matrix = pd.DataFrame(index=returns_df.index)
+    spy_var_60 = spy_ret.rolling(60).var()
+    for t in assets:
+        beta_60d_matrix[t] = returns_df[t].rolling(60).cov(spy_ret) / spy_var_60
 
-    # Synthetic Momentum Factor
-    synth_mom = ((spy_p / spy_p.shift(12)) - 1).loc[daily_returns.index]
-    mom_corr = user_daily.rolling(20).corr(synth_mom)
-    latest_mom_corr = float(mom_corr.dropna().iloc[-1]) if not mom_corr.dropna().empty else 0.0
-
-    # Rolling Volatility (20d annualized)
-    rolling_vol = user_daily.rolling(20).std() * np.sqrt(252)
-    spy_rolling_vol = spy_daily.rolling(20).std() * np.sqrt(252)
+    # Cumulative Active Return vs SPY: tích lũy (1 + (Rp - R_spy))
+    cum_active_return = (1 + (port_ret - spy_ret)).cumprod() - 1
 
     return {
-        "user_daily": user_daily,
-        "user_cum": user_cum,
-        "user_total": user_total,
-        "user_vol": user_vol,
-        "user_sharpe": user_sharpe,
-        "user_dd": user_dd,
-        "spy_daily": spy_daily,
-        "spy_cum": spy_cum,
-        "spy_total": spy_total,
-        "spy_vol": spy_vol,
-        "spy_sharpe": spy_sharpe,
-        "spy_dd": spy_dd,
-        "opt_weights": opt_dict,
-        "opt_cum": opt_cum,
-        "opt_total": opt_total,
-        "opt_vol": opt_vol,
-        "opt_ret": opt_ret,
-        "opt_sharpe": opt_sharpe,
-        "opt_dd": opt_dd,
-        "mc_vols": mc_vols,
-        "mc_returns": mc_returns,
-        "mc_sharpes": mc_sharpes,
-        "min_vol_point": min_vol_point,
-        "beta_total": beta_total,
-        "latest_beta": latest_beta,
-        "rolling_beta": rolling_beta,
-        "asset_rolling_betas": asset_rolling_betas,
-        "capm_alpha": capm_alpha,
-        "treynor_ratio": treynor_ratio,
-        "active_attributions": active_attributions,
-        "asset_totals": asset_totals,
-        "current_regime": current_regime,
-        "regime_score": int(r_score[-1]),
-        "regime_df": regime_df,
-        "regime_strategy_cum": regime_strategy_cum,
-        "signals": signals,
-        "latest_mom_corr": latest_mom_corr,
-        "mom_corr": mom_corr,
-        "rolling_vol": rolling_vol,
-        "spy_rolling_vol": spy_rolling_vol,
-        "daily_returns": daily_returns,
-        "close_df": close_df,
+        "port_ret": port_ret, "spy_ret": spy_ret, "port_cum": port_cum, "spy_cum": spy_cum,
+        "total_port_ret": total_port_ret, "total_spy_ret": total_spy_ret, "alpha_vs_spy": alpha_vs_spy,
+        "port_vol": port_vol, "port_sharpe": port_sharpe, "spy_dd": spy_dd, "port_dd": port_dd,
+        "roll_vol_port": roll_vol_port, "roll_vol_spy": roll_vol_spy,
+        "rolling_beta": rolling_beta, "latest_beta": latest_beta, "market_beta": market_beta,
+        "rolling_mom_corr": rolling_mom_corr, "latest_mom_exp": latest_mom_exp,
+        "opt": opt, "opt_cum": opt_cum, "mc_vols": mc_vols, "mc_returns": mc_returns, "mc_sharpes": mc_sharpes,
+        "indiv_vols": indiv_vols, "indiv_rets": indiv_rets,
+        "capm_alpha": capm_alpha, "treynor_ratio": treynor_ratio, "risk_regime": risk_regime,
+        "factor_betas": factor_betas, "sig_matrix": sig_matrix, "avg_signal": avg_signal, "port_sig_label": port_sig_label,
+        "strat_cum": strat_cum, "regime_df": regime_df, "beta_60d_matrix": beta_60d_matrix,
+        "cum_active_return": cum_active_return, "returns_df": returns_df
     }
 
 
-# 4. Hiển thị Giao diện Terminal
 if not tickers:
-    st.warning("⚠️ Vui lòng nhập danh sách mã cổ phiếu hợp lệ.")
+    st.warning("Vui lòng nhập ít nhất 1 mã cổ phiếu.")
 else:
-    with st.spinner("Đang khởi tạo toàn bộ hạ tầng phân tích Bloomberg Terminal..."):
-        close_data, err = fetch_terminal_data(tickers, benchmark_ticker, str(start_date), str(end_date))
-
-    if err:
-        st.error(f"⚠️ {err}")
+    close_df, err = fetch_terminal_data(tickers, "SPY", str(start_date))
+    if err or close_df is None or "SPY" not in close_df.columns:
+        st.error(err or "Không tải được dữ liệu danh mục hoặc SPY.")
     else:
-        m = run_full_quantitative_pipeline(close_data, tickers, benchmark_ticker, normalized_weights, rf_rate, max_weight_cap, num_monte_carlo)
+        m = run_full_quantitative_pipeline(close_df, tickers, "SPY", weights_dict, rf=0.02, max_w=1.0, n_mc=5000)
+        opt = m["opt"]
 
-        # TOP BLOOMBERG TICKER TAPE / REGIME BANNER
-        reg_colors = {"BULL": "🟢", "NEUTRAL": "🟡", "BEAR": "🔴"}
-        icon = reg_colors.get(m["current_regime"], "⚪")
-        st.markdown(
-            f"<div style='background-color:#111625; padding:10px 16px; border-radius:6px; border-left:5px solid #00CC96; margin-bottom:15px;'>"
-            f"<b>🏛️ MARKET REGIME MONITOR:</b> Trạng thái thị trường hiện tại: <b>{icon} {m['current_regime']}</b> "
-            f"(Regime Score: <b>{m['regime_score']}</b>) | "
-            f"Benchmark {benchmark_ticker} Last: <b>${close_data[benchmark_ticker].iloc[-1]:.2f}</b> | "
-            f"Portfolio Beta: <b>{m['latest_beta']:.2f}</b> | "
-            f"Treynor Ratio: <b>{m['treynor_ratio']:.2f}</b> | "
-            f"CAPM Alpha: <b>{m['capm_alpha']*100:.2f}%</b>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Portfolio", "⚠️ Risk", "🚦 Signals", "🔄 Backtest", "📑 Factors"])
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📊 **Tab 1: Portfolio & Efficient Frontier**",
-            "🛡️ **Tab 2: Risk & Rolling Beta Heatmap**",
-            "📡 **Tab 3: Trading Signals**",
-            "🔬 **Tab 4: Backtest Performance**",
-            "⚡ **Tab 5: Factors, CAPM & Attribution**"
-        ])
-
-        # ==================== TAB 1: PORTFOLIO ====================
+        # ==================== TAB 1: PORTFOLIO (13 metrics + 5 charts) ====================
         with tab1:
-            st.subheader("🎯 Tối Ưu Hóa Danh Mục & Biên Hiệu Quả Monte-Carlo")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.info("👤 **User Portfolio**")
-                st.metric("Total Return", f"{m['user_total']*100:.2f}%")
-                st.metric("Volatility", f"{m['user_vol']*100:.2f}%")
-                st.metric("Sharpe Ratio", f"{m['user_sharpe']:.2f}")
-            with c2:
-                st.success("🌟 **Max Sharpe Optimized**")
-                st.metric("Expected Return", f"{m['opt_ret']*100:.2f}%")
-                st.metric("Volatility", f"{m['opt_vol']*100:.2f}%")
-                st.metric("Sharpe Ratio", f"{m['opt_sharpe']:.2f}", delta=f"{m['opt_sharpe'] - m['user_sharpe']:.2f}")
-            with c3:
-                st.warning(f"🏛️ **Benchmark ({benchmark_ticker})**")
-                st.metric("Total Return", f"{m['spy_total']*100:.2f}%")
-                st.metric("Volatility", f"{m['spy_vol']*100:.2f}%")
-                st.metric("Sharpe Ratio", f"{m['spy_sharpe']:.2f}")
+            st.subheader("Portfolio Engine")
+            # Row 1: 4 cols
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Portfolio Return", f"{m['total_port_ret']*100:.2f}%")
+            c2.metric("SPY Return", f"{m['total_spy_ret']*100:.2f}%")
+            c3.metric("Alpha vs SPY", f"{m['alpha_vs_spy']*100:.2f}%")
+            c4.metric("Sharpe", f"{m['port_sharpe']:.2f}")
 
-            st.divider()
+            # Row 2: 3 cols
+            r2_1, r2_2, r2_3 = st.columns(3)
+            r2_1.metric("Rolling Beta (SPY)", f"{m['latest_beta']:.2f}")
+            r2_2.metric("Market Beta", f"{m['market_beta']:.2f}")
+            r2_3.metric("Momentum Exposure", f"{m['latest_mom_exp']:.2f}")
 
-            col_ef, col_alloc = st.columns([2, 1])
-            with col_ef:
-                st.subheader("🌐 Monte-Carlo Efficient Frontier (Biên Hiệu Quả)")
-                fig_ef = go.Figure()
-                fig_ef.add_trace(go.Scatter(
-                    x=m["mc_vols"] * 100,
-                    y=m["mc_returns"] * 100,
-                    mode="markers",
-                    marker=dict(
-                        size=4,
-                        color=m["mc_sharpes"],
-                        colorscale="Viridis",
-                        colorbar=dict(title="Sharpe Ratio"),
-                        showscale=True
-                    ),
-                    name="Mô phỏng danh mục",
-                    hoverinfo="text",
-                    text=[f"Vol: {v*100:.1f}%, Ret: {r*100:.1f}%, Sharpe: {s:.2f}" for v, r, s in zip(m["mc_vols"], m["mc_returns"], m["mc_sharpes"])]
-                ))
-                # Điểm Max Sharpe
-                fig_ef.add_trace(go.Scatter(
-                    x=[m["opt_vol"] * 100],
-                    y=[m["opt_ret"] * 100],
-                    mode="markers",
-                    marker=dict(color="red", size=14, symbol="star"),
-                    name="⭐ Max Sharpe Portfolio"
-                ))
-                # Điểm Min Volatility
-                fig_ef.add_trace(go.Scatter(
-                    x=[m["min_vol_point"][0] * 100],
-                    y=[m["min_vol_point"][1] * 100],
-                    mode="markers",
-                    marker=dict(color="yellow", size=12, symbol="diamond"),
-                    name="💎 Min Volatility Portfolio"
-                ))
-                fig_ef.update_layout(height=420, xaxis_title="Độ Biến Động - Volatility (%)", yaxis_title="Lợi Nhuận Kỳ Vọng (%)")
-                st.plotly_chart(fig_ef, use_container_width=True)
+            # Row 3: 3 cols
+            r3_1, r3_2, r3_3 = st.columns(3)
+            r3_1.metric("Optimized Sharpe", f"{opt['sharpe_ratio']:.2f}")
+            r3_2.metric("Optimized Return", f"{opt['expected_return']*100:.2f}%")
+            r3_3.metric("Optimized Volatility", f"{opt['volatility']*100:.2f}%")
 
-            with col_alloc:
-                st.subheader("⚖️ So Sánh Phân Bổ Trọng Số")
-                w_compare = pd.DataFrame({
-                    "User Weights": [normalized_weights[a] * 100 for a in tickers],
-                    "Optimized": [m["opt_weights"][a] * 100 for a in tickers]
-                }, index=tickers)
-                fig_w = px.bar(w_compare, barmode="group", labels={"value": "Tỷ trọng (%)", "index": "Mã"})
-                fig_w.update_layout(height=420, yaxis=dict(ticksuffix="%"))
-                st.plotly_chart(fig_w, use_container_width=True)
+            # Row 4: 3 cols
+            r4_1, r4_2, r4_3 = st.columns(3)
+            r4_1.metric("CAPM Alpha", f"{m['capm_alpha']*100:.2f}%")
+            r4_2.metric("Treynor Ratio", f"{m['treynor_ratio']:.2f}")
+            r4_3.metric("Regime", m["risk_regime"])
 
-            st.subheader("📈 Hiệu Suất Tích Lũy 3 Chiều")
-            fig_cum = go.Figure()
-            fig_cum.add_trace(go.Scatter(x=m["opt_cum"].index, y=m["opt_cum"]*100, name="Max Sharpe Optimized", line=dict(color="#00CC96", width=2.5)))
-            fig_cum.add_trace(go.Scatter(x=m["user_cum"].index, y=m["user_cum"]*100, name="User Portfolio", line=dict(color="#636EFA", width=2)))
-            fig_cum.add_trace(go.Scatter(x=m["spy_cum"].index, y=m["spy_cum"]*100, name=benchmark_ticker, line=dict(color="#FFA15A", width=1.5, dash="dash")))
-            fig_cum.update_layout(height=380, xaxis_title="Thời gian", yaxis_title="Lợi nhuận tích lũy (%)", yaxis=dict(ticksuffix="%"))
-            st.plotly_chart(fig_cum, use_container_width=True)
+            # Chart 1: Pie chart Allocation
+            st.subheader("Allocation")
+            fig_pie = px.pie(names=list(weights_dict.keys()), values=[v * 100 for v in weights_dict.values()])
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-        # ==================== TAB 2: RISK ====================
+            # Chart 2: Optimized Portfolio (Max Sharpe)
+            st.subheader("Optimized Portfolio (Max Sharpe)")
+            fig_opt_pie = px.pie(names=list(opt["weights"].keys()), values=[v * 100 for v in opt["weights"].values()], title="Optimized Allocation")
+            st.plotly_chart(fig_opt_pie, use_container_width=True)
+
+            # Chart 3: Portfolio vs SPY Benchmark
+            st.subheader("Portfolio vs SPY Benchmark")
+            fig_bench = go.Figure()
+            fig_bench.add_trace(go.Scatter(x=m["port_cum"].index, y=m["port_cum"] * 100, mode="lines", name="Portfolio"))
+            fig_bench.add_trace(go.Scatter(x=m["spy_cum"].index, y=m["spy_cum"] * 100, mode="lines", name="SPY"))
+            fig_bench.update_layout(height=360, yaxis=dict(ticksuffix="%"))
+            st.plotly_chart(fig_bench, use_container_width=True)
+
+            # Chart 4: Optimized vs Current vs SPY (+ scatter Individual Assets)
+            st.subheader("Optimized vs Current vs SPY")
+            fig_opt_comp = go.Figure()
+            fig_opt_comp.add_trace(go.Scatter(x=m["port_cum"].index, y=m["port_cum"] * 100, mode="lines", name="Current Portfolio"))
+            fig_opt_comp.add_trace(go.Scatter(x=m["opt_cum"].index, y=m["opt_cum"] * 100, mode="lines", name="Max Sharpe Portfolio"))
+            fig_opt_comp.add_trace(go.Scatter(x=m["spy_cum"].index, y=m["spy_cum"] * 100, mode="lines", name="SPY"))
+            fig_opt_comp.add_trace(go.Scatter(
+                x=[m["port_cum"].index[-1]] * len(tickers),
+                y=[((1 + m["returns_df"][t]).cumprod().iloc[-1] - 1) * 100 for t in tickers],
+                mode="markers+text",
+                text=tickers,
+                textposition="top right",
+                marker=dict(symbol="diamond", size=10, color="black"),
+                name="Individual Assets"
+            ))
+            fig_opt_comp.update_layout(height=380, yaxis=dict(ticksuffix="%"))
+            st.plotly_chart(fig_opt_comp, use_container_width=True)
+
+            # Chart 5: Monte Carlo Efficient Frontier (5,000 portfolios)
+            st.subheader("Monte Carlo Efficient Frontier")
+            fig_ef = go.Figure()
+            fig_ef.add_trace(go.Scatter(
+                x=m["mc_vols"] * 100, y=m["mc_returns"] * 100,
+                mode="markers",
+                marker=dict(size=4, color=m["mc_sharpes"], colorscale="Viridis", colorbar=dict(title="Sharpe"), showscale=True),
+                name="Simulated Portfolios"
+            ))
+            fig_ef.add_trace(go.Scatter(
+                x=m["indiv_vols"] * 100, y=m["indiv_rets"] * 100,
+                mode="markers+text", text=tickers, textposition="top center",
+                marker=dict(color="black", size=10, symbol="diamond"),
+                name="Individual Assets"
+            ))
+            fig_ef.add_trace(go.Scatter(
+                x=[opt["volatility"] * 100], y=[opt["expected_return"] * 100],
+                mode="markers",
+                marker=dict(color="red", size=16, symbol="star"),
+                name="Max Sharpe"
+            ))
+            fig_ef.update_layout(height=420, xaxis_title="Volatility (%)", yaxis_title="Return (%)")
+            st.plotly_chart(fig_ef, use_container_width=True)
+
+        # ==================== TAB 2: RISK (5 charts) ====================
         with tab2:
-            st.subheader("🛡️ Quản Trị Rủi Ro & Rolling Beta Heatmap Đa Tài Sản")
-            rk1, rk2, rk3 = st.columns(3)
-            rk1.metric("Latest Beta vs SPY", f"{m['latest_beta']:.2f}")
-            rk2.metric("Portfolio Max Drawdown", f"{m['user_dd'].min()*100:.2f}%")
-            rk3.metric(f"{benchmark_ticker} Max Drawdown", f"{m['spy_dd'].min()*100:.2f}%")
+            st.subheader("Risk Engine")
+            st.subheader("Correlation Matrix")
+            fig_corr = px.imshow(m["returns_df"][tickers + ["SPY"]].corr(), text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
+            st.plotly_chart(fig_corr, use_container_width=True)
 
-            st.divider()
+            st.subheader("Drawdown Comparison")
+            fig_dd = go.Figure()
+            fig_dd.add_trace(go.Scatter(x=m["port_dd"].index, y=m["port_dd"] * 100, fill="tozeroy", name="Portfolio Drawdown"))
+            fig_dd.add_trace(go.Scatter(x=m["spy_dd"].index, y=m["spy_dd"] * 100, name="SPY Drawdown"))
+            fig_dd.update_layout(height=340, yaxis=dict(ticksuffix="%"))
+            st.plotly_chart(fig_dd, use_container_width=True)
 
-            # Rolling Beta 20d & Rolling Beta Heatmap
-            st.subheader(f"📈 Rolling Beta (20 Ngày) vs {benchmark_ticker}")
-            fig_rbeta = go.Figure()
-            fig_rbeta.add_trace(go.Scatter(x=m["rolling_beta"].index, y=m["rolling_beta"], name="Rolling Beta (20d)", line=dict(color="#FFA15A", width=2)))
-            fig_rbeta.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Market Beta = 1.0")
-            fig_rbeta.update_layout(height=320, hovermode="x unified")
-            st.plotly_chart(fig_rbeta, use_container_width=True)
+            st.subheader("Rolling Volatility (20D)")
+            fig_rvol = go.Figure()
+            fig_rvol.add_trace(go.Scatter(x=m["roll_vol_port"].index, y=m["roll_vol_port"] * 100, name="Portfolio Rolling Vol"))
+            fig_rvol.add_trace(go.Scatter(x=m["roll_vol_spy"].index, y=m["roll_vol_spy"] * 100, name="SPY Rolling Vol"))
+            fig_rvol.update_layout(height=340, yaxis=dict(ticksuffix="%"))
+            st.plotly_chart(fig_rvol, use_container_width=True)
 
-            st.subheader("🔥 Rolling Beta Heatmap Của Từng Cổ Phiếu Theo Thời Gian")
-            clean_betas = m["asset_rolling_betas"].dropna().iloc[-60:]  # 60 phiên gần nhất
-            fig_beta_heat = px.imshow(
-                clean_betas.T,
-                aspect="auto",
-                color_continuous_scale="Viridis",
-                labels=dict(x="Ngày giao dịch", y="Mã cổ phiếu", color="Beta")
-            )
-            fig_beta_heat.update_layout(height=350)
-            st.plotly_chart(fig_beta_heat, use_container_width=True)
+            st.subheader("Rolling Beta vs SPY (20D)")
+            fig_beta = go.Figure()
+            fig_beta.add_trace(go.Scatter(x=m["rolling_beta"].index, y=m["rolling_beta"], name="Rolling Beta (20D)"))
+            fig_beta.add_hline(y=1.0, line_dash="dash", line_color="red")
+            fig_beta.update_layout(height=340, yaxis_title="Beta")
+            st.plotly_chart(fig_beta, use_container_width=True)
 
-            col_dd, col_corr = st.columns(2)
-            with col_dd:
-                st.subheader("📉 Biểu Đồ Drawdown So Sánh")
-                fig_dd = go.Figure()
-                fig_dd.add_trace(go.Scatter(x=m["user_dd"].index, y=m["user_dd"]*100, fill="tozeroy", name="Portfolio Drawdown", line=dict(color="#EF553B")))
-                fig_dd.add_trace(go.Scatter(x=m["spy_dd"].index, y=m["spy_dd"]*100, name=f"{benchmark_ticker} Drawdown", line=dict(color="#AB63FA", dash="dot")))
-                fig_dd.update_layout(height=350, yaxis=dict(ticksuffix="%"))
-                st.plotly_chart(fig_dd, use_container_width=True)
-            with col_corr:
-                st.subheader("📊 Ma Trận Tương Quan Toàn Diện")
-                corr_all = m["daily_returns"][tickers + [benchmark_ticker]].corr()
-                fig_c = px.imshow(corr_all, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
-                fig_c.update_layout(height=350)
-                st.plotly_chart(fig_c, use_container_width=True)
+            st.subheader("Momentum Factor Exposure (Rolling)")
+            fig_mom = go.Figure()
+            fig_mom.add_trace(go.Scatter(x=m["rolling_mom_corr"].index, y=m["rolling_mom_corr"], name="Momentum Exposure"))
+            fig_mom.add_hline(y=0.0, line_dash="dash", line_color="gray")
+            fig_mom.update_layout(height=340, yaxis_title="Rolling Correlation", yaxis=dict(range=[-1, 1]))
+            st.plotly_chart(fig_mom, use_container_width=True)
 
         # ==================== TAB 3: SIGNALS ====================
         with tab3:
-            st.subheader("📡 Tín Hiệu Kỹ Thuật MA5/MA20 & Xu Hướng")
-            s_cols = st.columns(len(tickers))
-            for i, t in enumerate(tickers):
-                sig_info = m["signals"][t]
-                with s_cols[i]:
-                    st.metric(t, f"${sig_info['Price']:.2f}", delta="🟢 BUY" if sig_info["Signal"] == "BUY" else "🔴 SELL")
-                    st.write(f"- MA5: **${sig_info['MA5']:.2f}**")
-                    st.write(f"- MA20: **${sig_info['MA20']:.2f}**")
-
-            st.divider()
-            st.subheader("📊 Biểu Đồ Xu Hướng Giá Kèm Tín Hiệu Cắt MA5/MA20")
-            selected_ticker = st.selectbox("Chọn mã để xem chi tiết biểu đồ tín hiệu:", tickers)
+            st.subheader("Signal Engine")
+            st.metric("Portfolio Signal", m["port_sig_label"])
             fig_sig = go.Figure()
-            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker], name="Close Price", line=dict(color="#1f77b4")))
-            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker].rolling(5).mean(), name="MA5", line=dict(color="#ff7f0e", dash="dot")))
-            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker].rolling(20).mean(), name="MA20", line=dict(color="#2ca02c")))
-            fig_sig.update_layout(height=400, xaxis_title="Thời gian", yaxis_title="Giá (USD)", hovermode="x unified")
+            fig_sig.add_trace(go.Scatter(x=m["avg_signal"].index, y=m["avg_signal"], mode="lines", name="Average Signal Score"))
+            fig_sig.update_layout(height=350, yaxis_title="Signal Score")
             st.plotly_chart(fig_sig, use_container_width=True)
+            st.dataframe(m["sig_matrix"].replace({1: "BUY", 0: "SELL"}).tail(20), use_container_width=True)
 
         # ==================== TAB 4: BACKTEST ====================
         with tab4:
-            st.subheader("🔬 Hiệu Suất Lịch Sử Chi Tiết & So Sánh Đa Chiều")
-            win_rate = (m["user_daily"] > 0).mean() * 100
-            b1, b2, b3, b4 = st.columns(4)
-            b1.metric("🏆 Win Rate (% Phiên Dương)", f"{win_rate:.2f}%")
-            b2.metric("📅 Tổng Số Phiên Giao Dịch", f"{len(m['user_daily'])}")
-            b3.metric("🔼 Lợi Nhuận Ngày Tốt Nhất", f"{m['user_daily'].max()*100:.2f}%")
-            b4.metric("🔽 Lợi Nhuận Ngày Kém Nhất", f"{m['user_daily'].min()*100:.2f}%")
+            st.subheader("Backtest Engine")
+            bt_df = pd.DataFrame({"Portfolio": m["port_cum"] * 100, "SPY": m["spy_cum"] * 100})
+            st.dataframe(bt_df.tail(10), use_container_width=True)
 
-            hist_df = pd.DataFrame({"Portfolio": m["user_daily"]*100, benchmark_ticker: m["spy_daily"]*100})
-            fig_h = px.histogram(hist_df, barmode="overlay", nbins=60, opacity=0.6, color_discrete_map={"Portfolio": "#00CC96", benchmark_ticker: "#636EFA"})
-            fig_h.update_layout(height=360, xaxis_title="Lợi nhuận ngày (%)")
-            st.plotly_chart(fig_h, use_container_width=True)
+            fig_bt = go.Figure()
+            fig_bt.add_trace(go.Scatter(x=m["port_cum"].index, y=m["port_cum"] * 100, name="Portfolio"))
+            fig_bt.add_trace(go.Scatter(x=m["spy_cum"].index, y=m["spy_cum"] * 100, name="SPY"))
+            fig_bt.update_layout(title="Portfolio vs SPY", height=340, yaxis=dict(ticksuffix="%"))
+            st.plotly_chart(fig_bt, use_container_width=True)
 
-            st.divider()
-            st.subheader("🧭 Backtest Chiến Lược Bull/Bear Regime Switching vs Static Buy & Hold")
+            fig_hist = px.histogram(m["port_ret"] * 100, nbins=50, title="Returns Histogram")
+            fig_hist.update_layout(height=340, showlegend=False)
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+            st.subheader("Regime Switching Strategy")
             fig_strat = go.Figure()
-            fig_strat.add_trace(go.Scatter(x=m["regime_strategy_cum"].index, y=m["regime_strategy_cum"]*100, name="🛡️ REGIME SWITCHING STRATEGY", line=dict(color="#00CC96", width=3)))
-            fig_strat.add_trace(go.Scatter(x=m["user_cum"].index, y=m["user_cum"]*100, name="👤 STATIC USER PORTFOLIO", line=dict(color="#636EFA", width=2)))
-            fig_strat.add_trace(go.Scatter(x=m["spy_cum"].index, y=m["spy_cum"]*100, name=f"🏛️ {benchmark_ticker} BUY & HOLD", line=dict(color="#EF553B", dash="dash")))
-            fig_strat.update_layout(height=380, xaxis_title="Thời gian", yaxis_title="Lợi nhuận tích lũy (%)", yaxis=dict(ticksuffix="%"), hovermode="x unified")
+            fig_strat.add_trace(go.Scatter(x=m["strat_cum"].index, y=m["strat_cum"] * 100, name="Regime Strategy"))
+            fig_strat.add_trace(go.Scatter(x=m["port_cum"].index, y=m["port_cum"] * 100, name="Static Portfolio"))
+            fig_strat.add_trace(go.Scatter(x=m["spy_cum"].index, y=m["spy_cum"] * 100, name="SPY"))
+            fig_strat.update_layout(height=360, yaxis=dict(ticksuffix="%"))
             st.plotly_chart(fig_strat, use_container_width=True)
+            st.dataframe(m["regime_df"][["Regime"]].tail(20), use_container_width=True)
 
-            st.subheader(f"🗺️ Bản Đồ Chế Độ Thị Trường ({benchmark_ticker} Price Regime Map)")
-            reg_df = m["regime_df"].dropna(subset=["MA200"])
+            st.subheader("Market Regime")
+            fig_score = go.Figure()
+            fig_score.add_trace(go.Scatter(x=m["regime_df"].index, y=m["regime_df"]["Regime_Score"], name="Regime Score"))
+            fig_score.update_layout(height=320)
+            st.plotly_chart(fig_score, use_container_width=True)
+            st.dataframe(m["regime_df"][["Regime_Score", "Regime"]].tail(20), use_container_width=True)
+
+            # Mới: SPY Price Regime Map (Bull/Neutral/Bear)
+            st.subheader("SPY Price Regime Map (Bull/Neutral/Bear)")
             fig_map = go.Figure()
-            color_map = {"BULL": "#00CC96", "NEUTRAL": "#FFA15A", "BEAR": "#EF553B"}
-            fig_map.add_trace(go.Scatter(x=reg_df.index, y=reg_df["Close"], mode="lines", name=f"{benchmark_ticker} Price", line=dict(color="rgba(150, 150, 150, 0.4)")))
+            cmap = {"BULL": "green", "NEUTRAL": "orange", "BEAR": "red"}
             for reg in ["BULL", "NEUTRAL", "BEAR"]:
-                sub = reg_df[reg_df["Regime"] == reg]
-                fig_map.add_trace(go.Scatter(x=sub.index, y=sub["Close"], mode="markers", name=f"Chế độ {reg}", marker=dict(color=color_map[reg], size=5)))
-            fig_map.add_trace(go.Scatter(x=reg_df.index, y=reg_df["MA50"], name="MA50", line=dict(color="#1f77b4", dash="dot")))
-            fig_map.add_trace(go.Scatter(x=reg_df.index, y=reg_df["MA200"], name="MA200", line=dict(color="#9467bd")))
-            fig_map.update_layout(height=400, xaxis_title="Thời gian", yaxis_title=f"{benchmark_ticker} Price (USD)", hovermode="x unified")
+                sub = m["regime_df"][m["regime_df"]["Regime"] == reg]
+                fig_map.add_trace(go.Scatter(
+                    x=sub.index, y=sub["SPY"],
+                    mode="markers", name=reg,
+                    marker=dict(color=cmap[reg], size=5)
+                ))
+            fig_map.update_layout(height=380, xaxis_title="Date", yaxis_title="SPY Price")
             st.plotly_chart(fig_map, use_container_width=True)
 
-        # ==================== TAB 5: FACTORS & ATTRIBUTION ====================
+        # ==================== TAB 5: FACTORS (hoàn toàn mới) ====================
         with tab5:
-            st.subheader("⚡ Phân Tích Nhân Tố, CAPM & Đóng Góp Lợi Nhuận Chủ Động")
+            st.subheader("Factor Analytics")
+            # Hàng metric 1 (3 cột): SPY Beta, QQQ Beta, IWM Beta
+            f1_1, f1_2, f1_3 = st.columns(3)
+            f1_1.metric("SPY Beta", f"{m['factor_betas'].get('SPY', 0.0):.2f}")
+            f1_2.metric("QQQ Beta", f"{m['factor_betas'].get('QQQ', 0.0):.2f}")
+            f1_3.metric("IWM Beta", f"{m['factor_betas'].get('IWM', 0.0):.2f}")
 
-            f_c1, f_c2, f_c3, f_c4 = st.columns(4)
-            f_c1.metric("🎯 CAPM Alpha", f"{m['capm_alpha']*100:.2f}%", help="Lợi nhuận vượt trội sau khi đã điều chỉnh rủi ro thị trường theo CAPM")
-            f_c2.metric("📐 Treynor Ratio", f"{m['treynor_ratio']:.2f}", help="(Rp - Rf) / Beta")
-            f_c3.metric("⚡ Overall Beta vs SPY", f"{m['beta_total']:.2f}")
-            f_c4.metric("🌪️ Momentum Corr", f"{m['latest_mom_corr']:.2f}")
+            # Hàng metric 2 (3 cột): VIX Beta, CAPM Alpha, Treynor Ratio
+            f2_1, f2_2, f2_3 = st.columns(3)
+            f2_1.metric("VIX Beta", f"{m['factor_betas'].get('VIX', 0.0):.2f}")
+            f2_2.metric("CAPM Alpha", f"{m['capm_alpha']*100:.2f}%")
+            f2_3.metric("Treynor Ratio", f"{m['treynor_ratio']:.2f}")
 
-            st.divider()
+            # Metric đơn: Market Regime
+            st.metric("Market Regime", m["risk_regime"])
 
-            # Active Return Attribution vs SPY
-            st.subheader(f"📊 Active Return Attribution vs {benchmark_ticker}")
-            st.caption("Đóng góp của từng cổ phiếu vào lợi nhuận vượt trội so với thị trường: Contrib = Weight × (Asset Return - SPY Return)")
+            # 5. Factor Exposures Bar chart: Portfolio Factor Betas
+            st.subheader("Portfolio Factor Betas")
+            fb_df = pd.DataFrame({"Factor": list(m["factor_betas"].keys()), "Beta": list(m["factor_betas"].values())})
+            fig_fb = px.bar(fb_df, x="Factor", y="Beta", text_auto=".2f")
+            fig_fb.update_traces(textposition="outside")
+            fig_fb.update_layout(height=360)
+            st.plotly_chart(fig_fb, use_container_width=True)
 
-            attrib_df = pd.DataFrame({
-                "Cổ phiếu": list(m["active_attributions"].keys()),
-                "Đóng góp Alpha (%)": [v * 100 for v in m["active_attributions"].values()]
-            })
-            attrib_df["Màu sắc"] = np.where(attrib_df["Đóng góp Alpha (%)"] >= 0, "Dương (Alpha Generator)", "Âm (Detractor)")
+            # 6. Rolling Beta Heatmap vs SPY (60-Day Rolling Beta)
+            st.subheader("60-Day Rolling Beta")
+            b60_clean = m["beta_60d_matrix"].dropna().iloc[-60:]
+            fig_bheat = px.imshow(b60_clean.T, aspect="auto", color_continuous_scale="Viridis", labels=dict(x="Date", y="Ticker", color="Beta"))
+            fig_bheat.update_layout(height=340)
+            st.plotly_chart(fig_bheat, use_container_width=True)
 
-            fig_attr = px.bar(
-                attrib_df,
-                x="Cổ phiếu",
-                y="Đóng góp Alpha (%)",
-                color="Màu sắc",
-                color_discrete_map={"Dương (Alpha Generator)": "#00CC96", "Âm (Detractor)": "#EF553B"}
-            )
-            fig_attr.update_layout(height=380, yaxis=dict(ticksuffix="%"))
-            st.plotly_chart(fig_attr, use_container_width=True)
+            # 7. Active Return Attribution vs SPY: Portfolio Outperformance vs SPY
+            st.subheader("Portfolio Outperformance vs SPY")
+            fig_act = go.Figure()
+            fig_act.add_trace(go.Scatter(x=m["cum_active_return"].index, y=m["cum_active_return"] * 100, mode="lines", name="Cumulative Active Return"))
+            fig_act.update_layout(height=340, yaxis=dict(ticksuffix="%"))
+            st.plotly_chart(fig_act, use_container_width=True)
 
-            st.divider()
-            st.subheader("🌪️ 3 Biểu Đồ Nhân Tố Động: Rolling Volatility, Rolling Beta & Momentum Exposure")
-            fig_rv = go.Figure()
-            fig_rv.add_trace(go.Scatter(x=m["rolling_vol"].index, y=m["rolling_vol"]*100, name="Portfolio Rolling Vol"))
-            fig_rv.add_trace(go.Scatter(x=m["spy_rolling_vol"].index, y=m["spy_rolling_vol"]*100, name=f"{benchmark_ticker} Rolling Vol", line=dict(dash="dot")))
-            fig_rv.update_layout(title="1. Rolling Volatility (20d Annualized)", height=310, yaxis=dict(ticksuffix="%"))
-            st.plotly_chart(fig_rv, use_container_width=True)
+            # 8. Factor Summary table
+            st.subheader("Factor Summary")
+            st.dataframe(fb_df, use_container_width=True)
 
-            fig_rb5 = go.Figure()
-            fig_rb5.add_trace(go.Scatter(x=m["rolling_beta"].index, y=m["rolling_beta"], name="Rolling Beta vs SPY", line=dict(color="#FFA15A")))
-            fig_rb5.add_hline(y=1.0, line_dash="dash", line_color="red")
-            fig_rb5.update_layout(title=f"2. Rolling Beta vs {benchmark_ticker} (20d)", height=310)
-            st.plotly_chart(fig_rb5, use_container_width=True)
-
-            fig_mc = go.Figure()
-            fig_mc.add_trace(go.Scatter(x=m["mom_corr"].index, y=m["mom_corr"], name="Momentum Factor Exposure", line=dict(color="#AB63FA")))
-            fig_mc.add_hline(y=0.0, line_dash="dash", line_color="gray")
-            fig_mc.update_layout(title="3. Momentum Factor Exposure (Rolling Corr 20d)", height=310, yaxis=dict(range=[-1, 1]))
-            st.plotly_chart(fig_mc, use_container_width=True)
+            # 9. Top/Bottom Beta Tickers từ ma trận beta 60 ngày
+            latest_60d_betas = m["beta_60d_matrix"].dropna().iloc[-1].sort_values(ascending=False)
+            col_top, col_bot = st.columns(2)
+            with col_top:
+                st.subheader("Highest Beta Names")
+                st.dataframe(latest_60d_betas.head(5).rename("60D Beta"), use_container_width=True)
+            with col_bot:
+                st.subheader("Lowest Beta Names")
+                st.dataframe(latest_60d_betas.tail(5).sort_values(ascending=True).rename("60D Beta"), use_container_width=True)
