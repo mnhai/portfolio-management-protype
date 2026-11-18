@@ -11,7 +11,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
-import plotly.express as px
+import plotly.express as pxâsssxx
 
 # 1. Cấu hình giao diện Streamlit
 st.set_page_config(
@@ -278,6 +278,15 @@ else:
                 fig_corr.update_layout(height=350)
                 st.plotly_chart(fig_corr, use_container_width=True)
 
+            st.divider()
+            st.subheader("📋 Bảng So Sánh Chỉ Số Biến Động")
+            risk_summary = pd.DataFrame({
+                "Chỉ số": ["Độ Biến Động (Volatility Năm)", "Mức Sụt Giảm Lớn Nhất (Max Drawdown)", "Sharpe Ratio", "Latest Rolling Beta"],
+                "Portfolio": [f"{m['port_vol'] * 100:.2f}%", f"{m['port_dd'].min() * 100:.2f}%", f"{m['port_sharpe']:.2f}", f"{m['latest_beta']:.2f}"],
+                f"Benchmark ({benchmark_ticker})": [f"{m['spy_vol'] * 100:.2f}%", f"{m['spy_dd'].min() * 100:.2f}%", f"{m['spy_sharpe']:.2f}", "1.00"]
+            })
+            st.dataframe(risk_summary.set_index("Chỉ số"), use_container_width=True)
+
         # ==================== TAB 3: SIGNALS ====================
         with tab3:
             st.subheader("📡 Tín Hiệu Giao Dịch MA5 / MA20")
@@ -290,13 +299,24 @@ else:
                     st.write(f"- MA5: **${info['MA5']:.2f}**")
                     st.write(f"- MA20: **${info['MA20']:.2f}**")
 
+            st.divider()
+            st.subheader("📊 Biểu Đồ Xu Hướng Giá Kèm Tín Hiệu Cắt MA5/MA20")
+            selected_ticker = st.selectbox("Chọn mã để xem chi tiết biểu đồ tín hiệu:", tickers)
+            fig_sig = go.Figure()
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker], name="Close Price", line=dict(color="#1f77b4")))
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker].rolling(5).mean(), name="MA5", line=dict(color="#ff7f0e", dash="dot")))
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker].rolling(20).mean(), name="MA20", line=dict(color="#2ca02c")))
+            fig_sig.update_layout(height=400, xaxis_title="Thời gian", yaxis_title="Giá (USD)", hovermode="x unified")
+            st.plotly_chart(fig_sig, use_container_width=True)
+
         # ==================== TAB 4: BACKTEST ====================
         with tab4:
             st.subheader(f"🔬 Hiệu Suất Lịch Sử vs {benchmark_ticker}")
-            b1, b2, b3 = st.columns(3)
+            b1, b2, b3, b4 = st.columns(4)
             b1.metric("🏆 Win Rate", f"{m['win_rate']:.1f}%")
-            b2.metric("🔼 Lợi Nhuận Ngày Tốt Nhất", f"{m['port_daily'].max() * 100:.2f}%")
-            b3.metric("🔽 Lợi Nhuận Ngày Kém Nhất", f"{m['port_daily'].min() * 100:.2f}%")
+            b2.metric("📅 Tổng Số Phiên Giao Dịch", f"{len(m['port_daily'])}")
+            b3.metric("🔼 Lợi Nhuận Ngày Tốt Nhất", f"{m['port_daily'].max() * 100:.2f}%")
+            b4.metric("🔽 Lợi Nhuận Ngày Kém Nhất", f"{m['port_daily'].min() * 100:.2f}%")
 
             st.divider()
             st.subheader("📊 Histogram Phân Phối Lợi Nhuận Ngày")

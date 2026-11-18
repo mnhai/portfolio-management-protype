@@ -219,6 +219,10 @@ def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchma
     mom_corr = user_daily.rolling(20).corr(synth_mom)
     latest_mom_corr = float(mom_corr.dropna().iloc[-1]) if not mom_corr.dropna().empty else 0.0
 
+    # Rolling Volatility (20d annualized)
+    rolling_vol = user_daily.rolling(20).std() * np.sqrt(252)
+    spy_rolling_vol = spy_daily.rolling(20).std() * np.sqrt(252)
+
     return {
         "user_daily": user_daily,
         "user_cum": user_cum,
@@ -255,6 +259,9 @@ def run_full_quantitative_pipeline(close_df: pd.DataFrame, assets: list, benchma
         "regime_score": int(r_score[-1]),
         "signals": signals,
         "latest_mom_corr": latest_mom_corr,
+        "mom_corr": mom_corr,
+        "rolling_vol": rolling_vol,
+        "spy_rolling_vol": spy_rolling_vol,
         "daily_returns": daily_returns,
         "close_df": close_df,
     }
@@ -383,7 +390,14 @@ else:
 
             st.divider()
 
-            # Rolling Beta Heatmap
+            # Rolling Beta 20d & Rolling Beta Heatmap
+            st.subheader(f"📈 Rolling Beta (20 Ngày) vs {benchmark_ticker}")
+            fig_rbeta = go.Figure()
+            fig_rbeta.add_trace(go.Scatter(x=m["rolling_beta"].index, y=m["rolling_beta"], name="Rolling Beta (20d)", line=dict(color="#FFA15A", width=2)))
+            fig_rbeta.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Market Beta = 1.0")
+            fig_rbeta.update_layout(height=320, hovermode="x unified")
+            st.plotly_chart(fig_rbeta, use_container_width=True)
+
             st.subheader("🔥 Rolling Beta Heatmap Của Từng Cổ Phiếu Theo Thời Gian")
             clean_betas = m["asset_rolling_betas"].dropna().iloc[-60:]  # 60 phiên gần nhất
             fig_beta_heat = px.imshow(
@@ -421,11 +435,25 @@ else:
                     st.write(f"- MA5: **${sig_info['MA5']:.2f}**")
                     st.write(f"- MA20: **${sig_info['MA20']:.2f}**")
 
+            st.divider()
+            st.subheader("📊 Biểu Đồ Xu Hướng Giá Kèm Tín Hiệu Cắt MA5/MA20")
+            selected_ticker = st.selectbox("Chọn mã để xem chi tiết biểu đồ tín hiệu:", tickers)
+            fig_sig = go.Figure()
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker], name="Close Price", line=dict(color="#1f77b4")))
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker].rolling(5).mean(), name="MA5", line=dict(color="#ff7f0e", dash="dot")))
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker].rolling(20).mean(), name="MA20", line=dict(color="#2ca02c")))
+            fig_sig.update_layout(height=400, xaxis_title="Thời gian", yaxis_title="Giá (USD)", hovermode="x unified")
+            st.plotly_chart(fig_sig, use_container_width=True)
+
         # ==================== TAB 4: BACKTEST ====================
         with tab4:
             st.subheader("🔬 Hiệu Suất Lịch Sử Chi Tiết & So Sánh Đa Chiều")
             win_rate = (m["user_daily"] > 0).mean() * 100
-            st.metric("🏆 Win Rate (% Phiên Dương)", f"{win_rate:.2f}%")
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("🏆 Win Rate (% Phiên Dương)", f"{win_rate:.2f}%")
+            b2.metric("📅 Tổng Số Phiên Giao Dịch", f"{len(m['user_daily'])}")
+            b3.metric("🔼 Lợi Nhuận Ngày Tốt Nhất", f"{m['user_daily'].max()*100:.2f}%")
+            b4.metric("🔽 Lợi Nhuận Ngày Kém Nhất", f"{m['user_daily'].min()*100:.2f}%")
 
             hist_df = pd.DataFrame({"Portfolio": m["user_daily"]*100, benchmark_ticker: m["spy_daily"]*100})
             fig_h = px.histogram(hist_df, barmode="overlay", nbins=60, opacity=0.6, color_discrete_map={"Portfolio": "#00CC96", benchmark_ticker: "#636EFA"})
@@ -463,3 +491,23 @@ else:
             )
             fig_attr.update_layout(height=380, yaxis=dict(ticksuffix="%"))
             st.plotly_chart(fig_attr, use_container_width=True)
+
+            st.divider()
+            st.subheader("🌪️ 3 Biểu Đồ Nhân Tố Động: Rolling Volatility, Rolling Beta & Momentum Exposure")
+            fig_rv = go.Figure()
+            fig_rv.add_trace(go.Scatter(x=m["rolling_vol"].index, y=m["rolling_vol"]*100, name="Portfolio Rolling Vol"))
+            fig_rv.add_trace(go.Scatter(x=m["spy_rolling_vol"].index, y=m["spy_rolling_vol"]*100, name=f"{benchmark_ticker} Rolling Vol", line=dict(dash="dot")))
+            fig_rv.update_layout(title="1. Rolling Volatility (20d Annualized)", height=310, yaxis=dict(ticksuffix="%"))
+            st.plotly_chart(fig_rv, use_container_width=True)
+
+            fig_rb5 = go.Figure()
+            fig_rb5.add_trace(go.Scatter(x=m["rolling_beta"].index, y=m["rolling_beta"], name="Rolling Beta vs SPY", line=dict(color="#FFA15A")))
+            fig_rb5.add_hline(y=1.0, line_dash="dash", line_color="red")
+            fig_rb5.update_layout(title=f"2. Rolling Beta vs {benchmark_ticker} (20d)", height=310)
+            st.plotly_chart(fig_rb5, use_container_width=True)
+
+            fig_mc = go.Figure()
+            fig_mc.add_trace(go.Scatter(x=m["mom_corr"].index, y=m["mom_corr"], name="Momentum Factor Exposure", line=dict(color="#AB63FA")))
+            fig_mc.add_hline(y=0.0, line_dash="dash", line_color="gray")
+            fig_mc.update_layout(title="3. Momentum Factor Exposure (Rolling Corr 20d)", height=310, yaxis=dict(range=[-1, 1]))
+            st.plotly_chart(fig_mc, use_container_width=True)

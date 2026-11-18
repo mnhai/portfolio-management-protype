@@ -102,6 +102,11 @@ def calculate_portfolio_with_factors(close_df: pd.DataFrame, assets: list, bench
     port_vol = port_daily.std() * np.sqrt(252)
     spy_vol = spy_daily.std() * np.sqrt(252)
     port_sharpe = (port_daily.mean() * 252 - rf) / port_vol if port_vol > 0 else 0.0
+    spy_sharpe = (spy_daily.mean() * 252 - rf) / spy_vol if spy_vol > 0 else 0.0
+
+    # Rolling Volatility (20d annualized)
+    rolling_vol = port_daily.rolling(20).std() * np.sqrt(252)
+    spy_rolling_vol = spy_daily.rolling(20).std() * np.sqrt(252)
 
     port_wealth = (1 + port_daily).cumprod()
     port_dd = (port_wealth - port_wealth.cummax()) / port_wealth.cummax()
@@ -153,6 +158,9 @@ def calculate_portfolio_with_factors(close_df: pd.DataFrame, assets: list, bench
         "port_vol": port_vol,
         "spy_vol": spy_vol,
         "port_sharpe": port_sharpe,
+        "spy_sharpe": spy_sharpe,
+        "rolling_vol": rolling_vol,
+        "spy_rolling_vol": spy_rolling_vol,
         "port_dd": port_dd,
         "spy_dd": spy_dd,
         "rolling_beta": rolling_beta,
@@ -216,17 +224,49 @@ else:
 
         # TAB 2: RISK
         with tab2:
-            st.subheader("🛡️ Quản Trị Rủi Ro & Beta")
+            st.subheader("🛡️ Quản Trị Rủi Ro & Rolling Beta (20 Ngày)")
             r1, r2, r3 = st.columns(3)
             r1.metric("⚡ Latest Rolling Beta", f"{m['latest_beta']:.2f}")
             r2.metric("📉 Volatility", f"{m['port_vol'] * 100:.2f}%")
             r3.metric("⚡ Max Drawdown", f"{m['port_dd'].min() * 100:.2f}%")
 
+            if m['latest_beta'] > 1.0:
+                excess_pct = (m['latest_beta'] - 1.0) * 100
+                st.info(f"💡 **Nhận định Định lượng:** Beta mới nhất = **{m['latest_beta']:.2f}** → Danh mục **nhạy cảm hơn thị trường ~{excess_pct:.1f}%**, mang tính chất **“đòn bẩy” (leveraged exposure)** so với thị trường.")
+            else:
+                defensive_pct = (1.0 - m['latest_beta']) * 100
+                st.info(f"💡 **Nhận định Định lượng:** Beta mới nhất = **{m['latest_beta']:.2f}** → Danh mục **ít nhạy cảm hơn thị trường ~{defensive_pct:.1f}%**, mang tính chất **phòng thủ (defensive/hedging)**.")
+
             fig_beta = go.Figure()
             fig_beta.add_trace(go.Scatter(x=m["rolling_beta"].index, y=m["rolling_beta"], name="Rolling Beta (20d)", line=dict(color="#FFA15A", width=2)))
             fig_beta.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Market Beta = 1.0")
-            fig_beta.update_layout(height=350, xaxis_title="Thời gian", yaxis_title="Beta")
+            fig_beta.update_layout(height=360, xaxis_title="Thời gian", yaxis_title="Beta", hovermode="x unified")
             st.plotly_chart(fig_beta, use_container_width=True)
+
+            col_dd, col_corr = st.columns(2)
+            with col_dd:
+                st.subheader("📉 Biểu Đồ Drawdown So Sánh")
+                fig_dd = go.Figure()
+                fig_dd.add_trace(go.Scatter(x=m["port_dd"].index, y=m["port_dd"] * 100, mode="lines", name="Portfolio Drawdown", fill="tozeroy", line=dict(color="#EF553B")))
+                fig_dd.add_trace(go.Scatter(x=m["spy_dd"].index, y=m["spy_dd"] * 100, mode="lines", name=f"{benchmark_ticker} Drawdown", line=dict(color="#AB63FA", dash="dot")))
+                fig_dd.update_layout(height=350, yaxis=dict(ticksuffix="%"))
+                st.plotly_chart(fig_dd, use_container_width=True)
+
+            with col_corr:
+                st.subheader("🔥 Ma Trận Tương Quan")
+                corr_df = m["daily_returns"][tickers + [benchmark_ticker]].corr()
+                fig_corr = px.imshow(corr_df, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1.0, zmax=1.0)
+                fig_corr.update_layout(height=350)
+                st.plotly_chart(fig_corr, use_container_width=True)
+
+            st.divider()
+            st.subheader("📋 Bảng So Sánh Chỉ Số Biến Động")
+            risk_summary = pd.DataFrame({
+                "Chỉ số": ["Độ Biến Động (Volatility Năm)", "Mức Sụt Giảm Lớn Nhất (Max Drawdown)", "Sharpe Ratio", "Latest Rolling Beta"],
+                "Portfolio": [f"{m['port_vol'] * 100:.2f}%", f"{m['port_dd'].min() * 100:.2f}%", f"{m['port_sharpe']:.2f}", f"{m['latest_beta']:.2f}"],
+                f"Benchmark ({benchmark_ticker})": [f"{m['spy_vol'] * 100:.2f}%", f"{m['spy_dd'].min() * 100:.2f}%", f"{m['spy_sharpe']:.2f}", "1.00"]
+            })
+            st.dataframe(risk_summary.set_index("Chỉ số"), use_container_width=True)
 
         # TAB 3: SIGNALS
         with tab3:
@@ -236,11 +276,34 @@ else:
                 info = m["signals"][t]
                 with s_cols[i]:
                     st.metric(t, f"${info['Price']:.2f}", delta="🟢 BUY" if info["Signal"] == "BUY" else "🔴 SELL")
+                    st.write(f"- MA5: **${info['MA5']:.2f}**")
+                    st.write(f"- MA20: **${info['MA20']:.2f}**")
+
+            st.divider()
+            st.subheader("📊 Biểu Đồ Xu Hướng Giá Kèm Tín Hiệu Cắt MA5/MA20")
+            selected_ticker = st.selectbox("Chọn mã để xem chi tiết biểu đồ tín hiệu:", tickers)
+            fig_sig = go.Figure()
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker], name="Close Price", line=dict(color="#1f77b4")))
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker].rolling(5).mean(), name="MA5", line=dict(color="#ff7f0e", dash="dot")))
+            fig_sig.add_trace(go.Scatter(x=close_data.index, y=close_data[selected_ticker].rolling(20).mean(), name="MA20", line=dict(color="#2ca02c")))
+            fig_sig.update_layout(height=400, xaxis_title="Thời gian", yaxis_title="Giá (USD)", hovermode="x unified")
+            st.plotly_chart(fig_sig, use_container_width=True)
 
         # TAB 4: BACKTEST
         with tab4:
-            st.subheader("🔬 Thống Kê Lịch Sử")
-            st.metric("🏆 Win Rate (% Ngày Dương)", f"{m['win_rate']:.1f}%")
+            st.subheader(f"🔬 Thống Kê Lịch Sử vs {benchmark_ticker}")
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("🏆 Win Rate (% Ngày Dương)", f"{m['win_rate']:.1f}%")
+            b2.metric("📅 Tổng Số Phiên Giao Dịch", f"{len(m['port_daily'])}")
+            b3.metric("🔼 Lợi Nhuận Ngày Tốt Nhất", f"{m['port_daily'].max() * 100:.2f}%")
+            b4.metric("🔽 Lợi Nhuận Ngày Kém Nhất", f"{m['port_daily'].min() * 100:.2f}%")
+
+            st.divider()
+            st.subheader("📊 Histogram So Sánh Phân Phối Lợi Nhuận Ngày (Portfolio vs SPY)")
+            compare_df = pd.DataFrame({"Portfolio": m["port_daily"] * 100, benchmark_ticker: m["spy_daily"] * 100})
+            fig_hist = px.histogram(compare_df, barmode="overlay", nbins=60, opacity=0.6, color_discrete_map={"Portfolio": "#00CC96", benchmark_ticker: "#636EFA"})
+            fig_hist.update_layout(height=380, xaxis_title="Lợi nhuận ngày (%)", yaxis_title="Tần suất")
+            st.plotly_chart(fig_hist, use_container_width=True)
 
         # ==================== TAB 5: MOMENTUM FACTORS ====================
         with tab5:
@@ -270,8 +333,42 @@ else:
 
             st.divider()
 
-            # Biểu đồ 1: Rolling Correlation với Synthetic Momentum
-            st.subheader(f"📈 Tương Quan Rolling (20 Ngày) giữa Danh Mục & Synthetic Momentum Factor")
+            # Biểu đồ 1: Rolling Volatility (20 ngày)
+            st.subheader("📉 1. Rolling Volatility (20 Ngày — Quy đổi Năm)")
+            fig_rvol = go.Figure()
+            fig_rvol.add_trace(go.Scatter(
+                x=m["rolling_vol"].index,
+                y=m["rolling_vol"] * 100,
+                mode="lines",
+                name="Portfolio Rolling Vol (20d)",
+                line=dict(color="#EF553B", width=2)
+            ))
+            fig_rvol.add_trace(go.Scatter(
+                x=m["spy_rolling_vol"].index,
+                y=m["spy_rolling_vol"] * 100,
+                mode="lines",
+                name=f"{benchmark_ticker} Rolling Vol (20d)",
+                line=dict(color="#636EFA", width=1.5, dash="dot")
+            ))
+            fig_rvol.update_layout(height=340, xaxis_title="Thời gian", yaxis_title="Độ biến động (%)", yaxis=dict(ticksuffix="%"), hovermode="x unified")
+            st.plotly_chart(fig_rvol, use_container_width=True)
+
+            # Biểu đồ 2: Rolling Beta vs SPY
+            st.subheader(f"⚡ 2. Rolling Beta (20 Ngày) vs {benchmark_ticker}")
+            fig_rbeta_tab5 = go.Figure()
+            fig_rbeta_tab5.add_trace(go.Scatter(
+                x=m["rolling_beta"].index,
+                y=m["rolling_beta"],
+                mode="lines",
+                name="Rolling Beta vs SPY",
+                line=dict(color="#FFA15A", width=2)
+            ))
+            fig_rbeta_tab5.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Market Beta = 1.0")
+            fig_rbeta_tab5.update_layout(height=340, xaxis_title="Thời gian", yaxis_title="Beta", hovermode="x unified")
+            st.plotly_chart(fig_rbeta_tab5, use_container_width=True)
+
+            # Biểu đồ 3: Momentum Factor Exposure (Rolling Correlation)
+            st.subheader(f"🌪️ 3. Momentum Factor Exposure (Tương Quan Rolling 20 Ngày)")
             fig_mom_corr = go.Figure()
             fig_mom_corr.add_trace(go.Scatter(
                 x=m["rolling_mom_corr"].index,
@@ -281,10 +378,10 @@ else:
                 line=dict(color="#AB63FA", width=2.2)
             ))
             fig_mom_corr.add_hline(y=0.0, line_dash="dash", line_color="gray")
-            fig_mom_corr.update_layout(height=380, xaxis_title="Thời gian", yaxis_title="Hệ số tương quan (-1 đến 1)", yaxis=dict(range=[-1, 1]))
+            fig_mom_corr.update_layout(height=340, xaxis_title="Thời gian", yaxis_title="Hệ số tương quan (-1 đến 1)", yaxis=dict(range=[-1, 1]), hovermode="x unified")
             st.plotly_chart(fig_mom_corr, use_container_width=True)
 
-            # Biểu đồ 2: So sánh Momentum 12 ngày giữa Portfolio vs SPY
+            # Biểu đồ bổ sung: So sánh Momentum 12 ngày giữa Portfolio vs SPY
             st.subheader(f"📊 So Sánh Đà Tăng Trưởng ({mom_lookback}-Day Momentum): Portfolio vs SPY")
             fig_mom_comp = go.Figure()
             fig_mom_comp.add_trace(go.Scatter(
