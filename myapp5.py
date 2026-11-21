@@ -1,157 +1,283 @@
-"""Bước 4 — myapp5.py: Interactive Portfolio App with User-Defined Weights"""
-from datetime import date, datetime
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objs as go
+import yfinance as yf
 import plotly.express as px
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="Bloomberg-Style Portfolio Terminal", page_icon="📈", layout="wide")
+st.set_page_config(
+    page_title="Bloomberg Portfolio Terminal",
+    layout="wide"
+)
 
 st.title("📈 Bloomberg-Style Portfolio Terminal")
 
-with st.sidebar:
-    st.header("⚙️ Settings")
-    tickers_input = st.text_input("Tickers", "AAPL,MSFT,NVDA")
-    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-    start_date = st.date_input("Start Date", date(2023, 1, 1))
+# ====================
+# INPUTS
+# ====================
+st.sidebar.header("Portfolio Builder")
 
-    st.subheader("Weights")
-    raw_weights = {}
-    default_w = 1.0 / len(tickers) if tickers else 1.0
-    for t in tickers:
-        raw_weights[t] = st.slider(f"{t} Weight", 0.0, 1.0, float(default_w), 0.05)
+tickers = st.sidebar.text_input(
+    "Tickers",
+    "AAPL,MSFT,NVDA"
+)
 
-    total_w = sum(raw_weights.values())
-    weights_dict = {k: v / total_w for k, v in raw_weights.items()} if total_w > 0 else {k: 1.0 / len(tickers) for k in tickers}
+ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
 
+start_date = st.sidebar.date_input(
+    "Start Date",
+    pd.Timestamp("2023-01-01")
+)
 
-@st.cache_data(ttl=3600)
-def fetch_data(assets: list, start: str):
-    symbols = list(dict.fromkeys(assets + ["SPY"]))
-    raw = yf.download(symbols, start=start, end=str(datetime.today().date()), auto_adjust=True)
-    if raw.empty:
-        return pd.DataFrame()
-    close_df = raw["Close"].copy() if "Close" in raw else raw.copy()
-    if isinstance(close_df, pd.Series):
-        close_df = close_df.to_frame(name=symbols[0])
-    if isinstance(close_df.columns, pd.MultiIndex):
-        close_df.columns = close_df.columns.get_level_values(-1)
-    close_df.dropna(how="all", inplace=True)
-    close_df.ffill(inplace=True)
-    close_df.dropna(inplace=True)
-    return close_df
+# ====================
+# WEIGHTS
+# ====================
+st.sidebar.subheader("Weights")
 
+weights = []
+for t in ticker_list:
+    w = st.sidebar.slider(t, 0.0, 1.0, 1 / len(ticker_list))
+    weights.append(w)
 
-if not tickers:
-    st.warning("Vui lòng nhập ít nhất 1 mã cổ phiếu.")
+weights = np.array(weights)
+
+if weights.sum() == 0:
+    weights = np.ones(len(weights)) / len(weights)
 else:
-    close_df = fetch_data(tickers, str(start_date))
-    if close_df.empty or "SPY" not in close_df.columns:
-        st.error("Không tải được dữ liệu danh mục hoặc SPY.")
-    else:
-        returns_df = close_df.pct_change().dropna()
-        w_vec = np.array([weights_dict[t] for t in tickers])
+    weights = weights / weights.sum()
 
-        port_ret = returns_df[tickers].dot(w_vec)
-        spy_ret = returns_df["SPY"]
+allocation = pd.DataFrame({
+    "Ticker": ticker_list,
+    "Weight": weights
+})
 
-        port_wealth = (1 + port_ret).cumprod()
-        spy_wealth = (1 + spy_ret).cumprod()
-        port_cum = port_wealth - 1
-        spy_cum = spy_wealth - 1
+# ====================
+# DATA
+# ====================
+data = yf.download(
+    ticker_list,
+    start=start_date,
+    auto_adjust=True
+)["Close"]
 
-        total_port_ret = port_cum.iloc[-1]
-        total_spy_ret = spy_cum.iloc[-1]
-        alpha_vs_spy = total_port_ret - total_spy_ret
+if isinstance(data, pd.Series):
+    data = data.to_frame()
 
-        port_vol = port_ret.std() * np.sqrt(252)
-        port_sharpe = (port_ret.mean() * 252) / port_vol if port_vol > 0 else 0.0
+data = data.dropna(how="all")
 
-        port_dd = (port_wealth - port_wealth.cummax()) / port_wealth.cummax()
-        spy_dd = (spy_wealth - spy_wealth.cummax()) / spy_wealth.cummax()
+# ====================
+# PORTFOLIO ENGINE
+# ====================
+returns = data.pct_change().dropna()
+portfolio_returns = returns.dot(weights)
 
-        roll_vol_port = port_ret.rolling(20).std() * np.sqrt(252)
-        roll_vol_spy = spy_ret.rolling(20).std() * np.sqrt(252)
+cumulative = (1 + portfolio_returns).cumprod()
 
-        # Signals per ticker (MA5 > MA20 -> 1 else 0)
-        sig_matrix = pd.DataFrame(index=close_df.index)
-        for t in tickers:
-            ma5 = close_df[t].rolling(5).mean()
-            ma20 = close_df[t].rolling(20).mean()
-            sig_matrix[t] = np.where(ma5 > ma20, 1, 0)
-        avg_signal = sig_matrix.mean(axis=1)
-        port_sig_label = "BUY" if avg_signal.iloc[-1] >= 0.5 else "SELL"
+# ====================
+# SPY BENCHMARK (SAFE + SCALAR FIX)
+# ====================
+spy = yf.download("SPY", start=start_date, auto_adjust=True)["Close"]
 
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Portfolio", "⚠️ Risk", "🚦 Signals", "🔄 Backtest"])
+# force SERIES (critical fix)
+spy = spy.squeeze()
 
-        # TAB 1: PORTFOLIO
-        with tab1:
-            st.subheader("Portfolio Engine")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Portfolio Return", f"{total_port_ret * 100:.2f}%")
-            c2.metric("SPY Return", f"{total_spy_ret * 100:.2f}%")
-            c3.metric("Alpha vs SPY", f"{alpha_vs_spy * 100:.2f}%")
-            c4.metric("Sharpe", f"{port_sharpe:.2f}")
+spy_returns = spy.pct_change().dropna()
 
-            st.subheader("Allocation")
-            fig_pie = px.pie(names=list(weights_dict.keys()), values=[v * 100 for v in weights_dict.values()])
-            st.plotly_chart(fig_pie, use_container_width=True)
+spy_returns = spy_returns.reindex(portfolio_returns.index).dropna()
 
-            st.subheader("Portfolio vs SPY Benchmark")
-            fig_bench = go.Figure()
-            fig_bench.add_trace(go.Scatter(x=port_cum.index, y=port_cum * 100, mode="lines", name="Portfolio"))
-            fig_bench.add_trace(go.Scatter(x=spy_cum.index, y=spy_cum * 100, mode="lines", name="SPY"))
-            fig_bench.update_layout(height=380, yaxis=dict(ticksuffix="%"))
-            st.plotly_chart(fig_bench, use_container_width=True)
+spy_vol = spy_returns.rolling(20).std() * np.sqrt(252)
 
-        # TAB 2: RISK
-        with tab2:
-            st.subheader("Risk Engine")
-            st.subheader("Correlation Matrix")
-            corr_df = returns_df[tickers + ["SPY"]].corr()
-            fig_corr = px.imshow(corr_df, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
-            st.plotly_chart(fig_corr, use_container_width=True)
+spy_cum = (1 + spy_returns).cumprod()
 
-            st.subheader("Drawdown Comparison (Portfolio vs SPY)")
-            fig_dd = go.Figure()
-            fig_dd.add_trace(go.Scatter(x=port_dd.index, y=port_dd * 100, fill="tozeroy", name="Portfolio Drawdown"))
-            fig_dd.add_trace(go.Scatter(x=spy_dd.index, y=spy_dd * 100, name="SPY Drawdown"))
-            fig_dd.update_layout(height=350, yaxis=dict(ticksuffix="%"))
-            st.plotly_chart(fig_dd, use_container_width=True)
+spy_drawdown = spy_cum / spy_cum.cummax() - 1
 
-            st.subheader("Rolling Volatility (20D Annualized) (Portfolio vs SPY)")
-            fig_rvol = go.Figure()
-            fig_rvol.add_trace(go.Scatter(x=roll_vol_port.index, y=roll_vol_port * 100, name="Portfolio Rolling Vol"))
-            fig_rvol.add_trace(go.Scatter(x=roll_vol_spy.index, y=roll_vol_spy * 100, name="SPY Rolling Vol"))
-            fig_rvol.update_layout(height=350, yaxis=dict(ticksuffix="%"))
-            st.plotly_chart(fig_rvol, use_container_width=True)
+# FINAL SAFE SCALAR EXTRACTION
+spy_total_return = float(spy_cum.iloc[-1].item() - 1) * 100
 
-        # TAB 3: SIGNALS
-        with tab3:
-            st.subheader("Signal Engine")
-            st.metric("Portfolio Signal", port_sig_label)
-            fig_sig = go.Figure()
-            fig_sig.add_trace(go.Scatter(x=avg_signal.index, y=avg_signal, mode="lines", name="Average Signal Score"))
-            fig_sig.update_layout(height=350, yaxis_title="Signal Score (0 to 1)")
-            st.plotly_chart(fig_sig, use_container_width=True)
+# ====================
+# SAFE SCALAR METRICS
+# ====================
+portfolio_total_return = float((cumulative.iloc[-1] - 1) * 100)
+# FINAL SAFE SCALAR EXTRACTION
+spy_total_return = float(spy_cum.iloc[-1].item() - 1) * 100
 
-            sig_display = sig_matrix.replace({1: "BUY", 0: "SELL"})
-            st.dataframe(sig_display.tail(20), use_container_width=True)
+alpha = float(portfolio_total_return - spy_total_return)
 
-        # TAB 4: BACKTEST
-        with tab4:
-            st.subheader("Backtest Engine")
-            bt_df = pd.DataFrame({"Portfolio": port_cum * 100, "SPY": spy_cum * 100})
-            st.dataframe(bt_df.tail(10), use_container_width=True)
+# ====================
+# RISK ENGINE
+# ====================
+corr = returns.corr()
+rolling_vol = portfolio_returns.rolling(20).std() * np.sqrt(252)
+drawdown = cumulative / cumulative.cummax() - 1
 
-            fig_bt = go.Figure()
-            fig_bt.add_trace(go.Scatter(x=port_cum.index, y=port_cum * 100, name="Portfolio"))
-            fig_bt.add_trace(go.Scatter(x=spy_cum.index, y=spy_cum * 100, name="SPY"))
-            fig_bt.update_layout(title="Portfolio vs SPY", height=350, yaxis=dict(ticksuffix="%"))
-            st.plotly_chart(fig_bt, use_container_width=True)
+# ====================
+# STRATEGY ENGINE
+# ====================
+signal_list = []
 
-            fig_hist = px.histogram(port_ret * 100, nbins=50, labels={"value": "Portfolio Daily Return (%)"})
-            fig_hist.update_layout(title="Portfolio Returns Histogram", height=350, showlegend=False)
-            st.plotly_chart(fig_hist, use_container_width=True)
+for t in ticker_list:
+    px_data = yf.download(t, start=start_date, auto_adjust=True)["Close"]
+
+    ma20 = px_data.rolling(20).mean()
+    ma50 = px_data.rolling(50).mean()
+
+    signal_list.append((ma20 > ma50).astype(int))
+
+signal_df = pd.concat(signal_list, axis=1)
+signal_df.columns = ticker_list
+signal_df = signal_df.dropna()
+
+portfolio_signal_series = signal_df.mean(axis=1)
+final_signal = "BUY" if portfolio_signal_series.iloc[-1] > 0.5 else "SELL"
+
+# ====================
+# METRICS
+# ====================
+volatility = float(portfolio_returns.std() * np.sqrt(252) * 100)
+
+if portfolio_returns.std() == 0:
+    sharpe = 0.0
+else:
+    sharpe = float((portfolio_returns.mean() / portfolio_returns.std()) * np.sqrt(252))
+
+# ====================
+# TABS
+# ====================
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Portfolio",
+    "⚠️ Risk",
+    "🚦 Signals",
+    "🔄 Backtest"
+])
+
+# ====================
+# TAB 1
+# ====================
+with tab1:
+
+    st.subheader("Portfolio Engine")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric("Portfolio Return", f"{portfolio_total_return:.2f}%")
+    col2.metric("SPY Return", f"{spy_total_return:.2f}%")
+    col3.metric("Alpha vs SPY", f"{alpha:.2f}%")
+    col4.metric("Sharpe", f"{sharpe:.2f}")
+
+    st.plotly_chart(
+        px.pie(allocation, names="Ticker", values="Weight", title="Allocation"),
+        use_container_width=True
+    )
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=cumulative.index,
+        y=cumulative,
+        name="Portfolio"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=spy_cum.index,
+        y=spy_cum,
+        name="SPY Benchmark"
+    ))
+
+    st.plotly_chart(fig, use_container_width=True)
+
+# ====================
+# TAB 2
+# ====================
+with tab2:
+
+    st.subheader("Risk Engine")
+
+    # Correlation heatmap
+    st.plotly_chart(
+        px.imshow(corr, text_auto=True, title="Correlation Matrix"),
+        use_container_width=True
+    )
+
+    # Drawdown comparison (Portfolio vs SPY)
+    fig_dd = go.Figure()
+
+    fig_dd.add_trace(go.Scatter(
+        x=cumulative.index,
+        y=drawdown,
+        name="Portfolio Drawdown"
+    ))
+
+    fig_dd.add_trace(go.Scatter(
+        x=spy_drawdown.index,
+        y=spy_drawdown,
+        name="SPY Drawdown"
+    ))
+
+    fig_dd.update_layout(
+        title="Drawdown Comparison",
+        yaxis_title="Drawdown"
+    )
+
+    st.plotly_chart(fig_dd, use_container_width=True)
+
+    # Volatility comparison (NEW)
+    fig_vol = go.Figure()
+
+    fig_vol.add_trace(go.Scatter(
+        x=rolling_vol.index,
+        y=rolling_vol,
+        name="Portfolio Volatility"
+    ))
+
+    fig_vol.add_trace(go.Scatter(
+        x=spy_vol.index,
+        y=spy_vol,
+        name="SPY Volatility"
+    ))
+
+    fig_vol.update_layout(
+        title="Rolling Volatility (20D Annualized)",
+        yaxis_title="Volatility"
+    )
+
+    st.plotly_chart(fig_vol, use_container_width=True)
+
+# ====================
+# TAB 3
+# ====================
+with tab3:
+
+    st.subheader("Signal Engine")
+
+    st.metric("Portfolio Signal", final_signal)
+
+    st.line_chart(portfolio_signal_series)
+
+    st.dataframe(signal_df.tail(20))
+
+# ====================
+# TAB 4
+# ====================
+with tab4:
+
+    st.subheader("Backtest Engine")
+
+    backtest_df = pd.DataFrame({
+        "Portfolio": cumulative,
+        "SPY": spy_cum
+    }).dropna()
+
+    st.dataframe(backtest_df.tail(10))
+
+    st.plotly_chart(
+        go.Figure([
+            go.Scatter(x=backtest_df.index, y=backtest_df["Portfolio"], name="Portfolio"),
+            go.Scatter(x=backtest_df.index, y=backtest_df["SPY"], name="SPY")
+        ]),
+        use_container_width=True
+    )
+
+    st.plotly_chart(
+        px.histogram(portfolio_returns, nbins=50),
+        use_container_width=True
+    )

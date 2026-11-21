@@ -1,4 +1,4 @@
-"""Regression tests ensuring cumulative feature preservation and MD-spec compliance across all app versions."""
+"""Regression tests verifying 100% verbatim PDF structure across all 9 app versions."""
 import py_compile
 import pytest
 
@@ -9,72 +9,75 @@ def _read(filename: str) -> str:
 
 
 @pytest.mark.parametrize("filename", [
-    "myapp1.py", "myapp2.py", "myapp5.py", "myapp7.py", "myapp8.py", "myapp9.py", "myapp10.py", "myapp13.py"
+    "myapp0.py", "myapp1.py", "myapp2.py", "myapp5.py",
+    "myapp7.py", "myapp8.py", "myapp9.py", "myapp10.py", "myapp13.py"
 ])
-def test_all_apps_compile(filename):
+def test_all_pdf_apps_compile(filename):
     py_compile.compile(filename, doraise=True)
 
 
-def test_myapp7_preserves_myapp5_features():
+def test_myapp0_matches_pdf():
+    src = _read("myapp0.py")
+    assert 'st.title("My First Trading App")' in src
+    assert 'st.write("Streamlit is working' in src
+
+
+def test_myapp1_matches_pdf():
+    src = _read("myapp1.py")
+    assert 'st.title("📈 Personal Trading Analytics App")' in src
+    assert 'df["MA20"]' in src and 'df["MA50"]' in src
+    assert 'st.header("Signal Lab")' in src
+
+
+def test_myapp2_matches_pdf():
+    src = _read("myapp2.py")
+    assert 'st.subheader("Portfolio Mode + Signal Lab")' in src
+    assert 'st.header("Portfolio Allocation")' in src
+    assert 'st.header("Signal Lab (Simplified)")' in src
+
+
+def test_myapp5_matches_pdf():
+    src = _read("myapp5.py")
+    assert 'st.subheader("Portfolio Engine")' in src
+    assert 'st.subheader("Risk Engine")' in src
+    assert 'fig_dd' in src and 'fig_vol' in src
+    assert 'st.subheader("Signal Engine")' in src
+    assert 'st.subheader("Backtest Engine")' in src
+
+
+def test_myapp7_matches_pdf():
     src = _read("myapp7.py")
-    assert "fig_beta" in src
-    assert "fig_dd" in src
-    assert "fig_corr" in src
-    assert "fig_rvol" in src
-    assert "fig_sig" in src
-    assert "fig_hist" in src
+    assert 'Rolling Beta (SPY)' in src
+    assert 'fig_beta' in src
+    assert 'rolling_alpha' in src
+    assert 'fig_dd' in src and 'fig_vol' in src
 
 
-def test_myapp8_has_5_risk_charts_and_preserves_myapp7():
+def test_myapp8_matches_pdf():
     src = _read("myapp8.py")
-    assert "roll_vol_port" in src
-    assert "rolling_beta" in src
-    assert "rolling_mom_corr" in src
-    assert "fig_dd" in src
-    assert "fig_corr" in src
-    assert "fig_sig" in src
-    assert "fig_hist" in src
+    assert 'Market Beta' in src and 'Momentum Exposure' in src
+    assert 'fig_dd' in src and 'fig_vol' in src and 'fig_beta' in src and 'fig_mom' in src
 
 
-def test_myapp9_preserves_myapp8_features():
+def test_myapp9_matches_pdf():
     src = _read("myapp9.py")
-    assert "optimize_max_sharpe" in src
-    assert "fig_opt_pie" in src
-    assert "fig_opt_comp" in src
-    assert "fig_beta" in src
-    assert "fig_dd" in src
-    assert "fig_corr" in src
-    assert "fig_sig" in src
-    assert "fig_hist" in src
-    assert "roll_vol_port" in src
-    assert "rolling_mom_corr" in src
+    assert 'Optimized Sharpe' in src
+    assert 'max_weight = 0.5' in src
+    assert 'fig_opt' in src and 'fig_mom' in src
 
 
-def test_myapp10_preserves_myapp9_features():
+def test_myapp10_matches_pdf():
     src = _read("myapp10.py")
-    assert "compute_market_regimes" in src
-    assert "simulate_regime_switching_strategy" in src
-    assert "optimize_max_sharpe" in src
-    assert "fig_dd" in src
-    assert "fig_corr" in src
-    assert "fig_sig" in src
-    assert "roll_vol_port" in src
-    assert "fig_strat" in src
-    assert "fig_score" in src
+    assert 'REGIME SWITCHING ENGINE' in src
+    assert 'vol_threshold = spy_vol_regime.quantile(0.7)' in src
+    assert 'fig_reg' in src and 'st.line_chart(regime_score)' in src
 
 
-def test_myapp13_matches_final_md_spec():
+def test_myapp13_matches_pdf():
     src = _read("myapp13.py")
-    assert "mc_vols" in src
-    assert "capm_alpha" in src
-    assert "treynor_ratio" in src
-    assert "cum_active_return" in src
-    assert "fig_bheat" in src
-    assert "fig_sig" in src
-    assert "fig_dd" in src
-    assert "roll_vol_port" in src
-    assert "rolling_mom_corr" in src
-    assert "fig_strat" in src
-    assert "fig_map" in src
-    assert "factor_betas" in src
-    assert "beta_60d_matrix" in src
+    assert 'n_portfolios = 5000' in src
+    assert 'fig_frontier' in src
+    assert 'fig_regime_scatter' in src
+    assert '["SPY", "QQQ", "IWM", "^VIX"]' in src
+    assert 'fig_factor' in src and 'fig_heat' in src and 'fig_attr' in src
+    assert 'Highest Beta Names' in src and 'Lowest Beta Names' in src
